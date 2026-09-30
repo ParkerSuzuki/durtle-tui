@@ -358,3 +358,70 @@ real keyring for an in-memory one, a test hook the library provides.
 
 **Package `main` can have tests too.** `backend_test.go` is `package main`
 and tests unexported functions like `buildItems` directly.
+
+## 8. Bubble Tea: the Elm architecture in Go
+
+Code: [ui/model.go](../ui/model.go), [ui/view.go](../ui/view.go), [ui/model_test.go](../ui/model_test.go)
+
+**Three methods run the whole UI.** A Bubble Tea program is any type with:
+- `Init() tea.Cmd`: work to start immediately (here: load reviews).
+- `Update(msg tea.Msg) (tea.Model, tea.Cmd)`: given an event (a key press,
+  a window resize, a finished HTTP call), return the new state and optionally
+  more work to do.
+- `View() tea.View`: turn the current state into what the screen shows.
+
+The framework loops: event in, `Update`, `View`, repeat. All state lives in
+`Model`; nothing else changes the screen. This is "The Elm Architecture",
+and it makes the UI easy to test: `model_test.go` feeds messages to
+`Update` and inspects the returned model, with no terminal involved.
+
+**Value receivers returning a new model.** `func (m Model) Update(...)`
+receives a *copy* of the model, changes the copy, and returns it. The
+framework keeps whatever you return. That is why every branch ends in
+`return m, cmd`, and why the tests write `m, cmd = step(t, m, msg)`.
+(`Session` is a pointer inside the model, so it is shared between copies on
+purpose: there is one review session.)
+
+**Commands are how slow work stays off the UI.** A `tea.Cmd` is just
+`func() tea.Msg`. Bubble Tea runs it on its own goroutine and delivers the
+returned message to `Update` when it finishes. `m.submit(sub)` returns a
+closure that calls the backend and returns `submittedMsg`. The UI keeps
+responding to keys while the HTTP request is in flight, with no callbacks,
+promises, or `async` keyword: goroutines plus a message.
+
+**Closures capture variables.** Inside `submit`, the returned function uses
+`s` and `m.backend` from the enclosing call. Go closures capture variables,
+so each command carries its own submission.
+
+**Type switches.** `switch msg := msg.(type) { case tea.KeyPressMsg: ... }`
+branches on the dynamic type stored in the `tea.Msg` interface, and inside
+each case `msg` already has the concrete type. Our own message types
+(`loadedMsg`, `submittedMsg`) are small unexported structs declared in one
+`type (...)` block.
+
+**Implicit interfaces, the big payoff.** `ui` declares
+`type Backend interface { Login; Load; Submit }` and never mentions
+`backend` from package `main`. `*backend` satisfies it simply by having
+those three methods, so `main` can pass it in. The test's `fakeBackend`
+satisfies it the same way. The package that *uses* the behavior defines the
+interface, sized to what it needs: "accept interfaces, return structs".
+
+**Context with timeouts per command.** Each command makes
+`context.WithTimeout(context.Background(), ...)` and `defer cancel()`, so a
+hung network call cannot freeze a submit forever. `cancel` must always be
+called to release the timer; `defer` guarantees it.
+
+**Import aliases.** `tea "charm.land/bubbletea/v2"` names the package `tea`
+in this file. The `/v2` suffix is Go's rule for major versions: a breaking
+v2 must have a different import path, so v1 and v2 can even coexist in one
+build.
+
+**`go mod tidy` after `go get`.** `go get` records the modules you asked
+for; `tidy` also adds checksums for everything *their* packages import
+(here, a clipboard library the text input uses). Run it whenever a build
+says "missing go.sum entry".
+
+**Lip Gloss styles are values.** `lipgloss.NewStyle().Bold(true).Padding(0, 2)`
+chains methods that each return a modified copy, so package-level styles
+like `meaningBar` can be shared safely. `style.Render(s)` returns a string
+with ANSI escape codes baked in.
