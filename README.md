@@ -5,7 +5,9 @@ or affiliated with WaniKani or Tofugu.
 
 Do your WaniKani reviews from the terminal. Written in Go.
 
-Status: milestones 1 (reviews) and 2 (dashboard) work. The dashboard shows
+Status: milestones 1 (reviews), 2 (dashboard), and 3 (lessons) work. Lessons
+follow your own rules (daily cap, order, types, batch size) set with `s` on
+the dashboard. The dashboard shows
 lessons and reviews available, a 24-hour forecast, level progress, and SRS
 counts; reviews start from it. Reviews: sync, back-to-back reviews graded like the
 website, submissions that are never lost, big kanji in kitty, and image radicals.
@@ -21,7 +23,8 @@ durtle-tui
 ```
 
 On first run, paste a WaniKani personal access token with the
-`reviews:create` permission. It is stored in your OS keyring.
+`reviews:create` and `assignments:start` permissions (the second one starts
+lessons). It is stored in your OS keyring.
 
 Optional: install `rsvg-convert` (package `librsvg`, or `librsvg2-bin` on
 Debian/Ubuntu) to review the radicals that have no Unicode character. Without

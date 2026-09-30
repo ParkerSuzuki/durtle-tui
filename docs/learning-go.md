@@ -624,3 +624,45 @@ two-space gap between them line up.
 recognizes both vim commands before an answer is graded. Go's `switch` has
 no fallthrough by default, so `case "":` returning early and the vim case
 never run into each other.
+
+## 14. Embedding, multi-key sorting, a tiny scanner, and one flag instead of a copy
+
+Code: [lessons/lessons.go](../lessons/lessons.go), [lessons/markup.go](../lessons/markup.go), [ui/model.go](../ui/model.go) (`lessonMode`, `settingsKey`)
+
+**Struct embedding.** `lessons.Lesson` starts with a bare `review.Item`
+field. Go *promotes* the embedded type's fields and methods, so a lesson
+has `l.Meanings`, `l.Characters` and `l.HasReading()` directly, and
+`l.Item` is still there when the quiz needs the plain item. This is
+composition, not inheritance: a `Lesson` is not an `Item` and cannot be
+passed where one is expected.
+
+**Sorting by several keys with `cmp`.** `cmp.Compare(a, b)` returns -1, 0
+or 1, and `cmp.Or(x, y, z)` (Go 1.22) returns the first non-zero value. So
+`cmp.Or(byLevel, byType, byID)` reads as "level, then type, then id",
+which is exactly WaniKani's lesson order.
+
+**String-typed enums.** `type Order string` with constants `Classic` and
+`Interleaved` stays readable in `settings.json` (`"order": "classic"`)
+while still being a distinct type in Go. `Clamp` maps any unknown value
+back to `Classic`, since JSON can hold anything.
+
+**Comparing structs to their zero value.** `s.Types == (Types{})` asks "is
+every type off?" in one expression, because a struct of bools is
+comparable. The parentheses are needed so Go does not read the `{` as
+the start of a block.
+
+**A hand-written scanner.** `Markup` walks a string with
+`strings.IndexByte` to find `<` and `>`, tracking the current tag. For a
+tiny, known format this is shorter and more predictable than a regular
+expression or an HTML parser, and the table test pins every edge case.
+
+**One flag instead of a copy.** The lesson quiz is the review screen with
+`lessonMode` set. One `if` in `answer()` decides whether a finished item
+is started (lessons) or submitted (reviews); grading, back-to-back order,
+warnings, big kanji and `:q` all come along for free.
+
+**Pointers into a struct field.** `settingsKey` does `s := &m.settings`
+and edits through `s`, so every setting change lands in the model's copy
+that `Update` returns. `saveSettings` does the opposite on purpose:
+`s := m.settings` copies the value before the closure runs later on
+another goroutine, so a keypress after Esc cannot change what gets saved.

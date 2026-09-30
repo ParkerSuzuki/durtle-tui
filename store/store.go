@@ -55,13 +55,17 @@ func SaveToken(tok string) error {
 	return os.WriteFile(path, []byte(tok+"\n"), 0o600)
 }
 
-func tokenPath() (string, error) {
+// ConfigFile is the path of a durtle-tui config file, e.g.
+// ~/.config/durtle-tui/settings.json on Linux.
+func ConfigFile(name string) (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, appName, "token"), nil
+	return filepath.Join(dir, appName, name), nil
 }
+
+func tokenPath() (string, error) { return ConfigFile("token") }
 
 // CacheDir is where synced data lives, e.g. ~/.cache/durtle-tui on Linux.
 func CacheDir() (string, error) {

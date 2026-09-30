@@ -3,11 +3,13 @@ package ui
 import (
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
+	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 )
 
@@ -50,9 +52,18 @@ func (m Model) View() tea.View {
 		body = m.summaryView()
 	case home:
 		body = m.homeView()
+	case teaching:
+		body = m.teachingView()
+	case lessonSummary:
+		body = m.lessonSummaryView()
+	case settingsScreen:
+		body = m.settingsView()
 	case failed:
 		what := "sync with WaniKani"
-		if m.loadingReviews {
+		switch {
+		case m.loadingLessons:
+			what = "load lessons"
+		case m.loadingReviews:
 			what = "load reviews"
 		}
 		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
@@ -85,26 +96,12 @@ func (m Model) onboardingView() string {
 func (m Model) reviewView() string {
 	item, part, _ := m.session.Current()
 	done := len(m.session.Results())
-	charStyle := lipgloss.NewStyle().Bold(true).Padding(blockPadding, 4).
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color(typeColors[item.Type]))
-	chars := charStyle.Render(item.Characters)
+	chars := m.itemBlock(item)
 	bar := meaningBar
 	if part == review.Reading {
 		bar = readingBar
 	}
 	if w := m.innerWidth(); w > 0 {
-		// Span the terminal, content centered. Styles are values, so these
-		// calls change local copies, not the shared package-level styles.
-		shown, style := item.Characters, charStyle
-		switch {
-		case item.Image != nil:
-			// The picture fills the block: 10 rows, no top or bottom padding.
-			shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
-		case m.fitScale(shown, w) > 0:
-			shown = " " // leave the row empty; bigCharsSeq draws on top
-		}
-		chars = style.Width(w).Align(lipgloss.Center).Render(shown)
 		bar = bar.Width(w).Align(lipgloss.Center)
 	}
 	prompt := bar.Render(fmt.Sprintf("%s %s", typeLabel(item.Type), part))
@@ -120,6 +117,45 @@ func (m Model) reviewView() string {
 		"",
 		dim.Render(":q dashboard   esc quit"),
 	}, "\n")
+}
+
+// itemBlock is the colored block showing an item's characters (or its
+// half-block image), spanning the terminal with the content centered.
+func (m Model) itemBlock(item review.Item) string {
+	charStyle := lipgloss.NewStyle().Bold(true).Padding(blockPadding, 4).
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color(typeColors[item.Type]))
+	w := m.innerWidth()
+	if w == 0 {
+		return charStyle.Render(item.Characters)
+	}
+	// Styles are values, so these calls change local copies, not shared styles.
+	shown, style := item.Characters, charStyle
+	switch {
+	case item.Image != nil:
+		// The picture fills the block: 10 rows, no top or bottom padding.
+		shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
+	case m.fitScale(shown, w) > 0:
+		shown = " " // leave the row empty; bigCharsSeq draws on top
+	}
+	return style.Width(w).Align(lipgloss.Center).Render(shown)
+}
+
+// currentItem is the item on screen: the one being reviewed or quizzed, or
+// the one being taught.
+func (m Model) currentItem() (review.Item, bool) {
+	switch m.screen {
+	case reviewing:
+		it, _, ok := m.session.Current()
+		return it, ok
+	case teaching:
+		ps := m.pages()
+		if len(ps) == 0 {
+			return review.Item{}, false
+		}
+		return m.batch()[ps[m.page].lesson].Item, true
+	}
+	return review.Item{}, false
 }
 
 // bigGlyph is text kitty draws at scale over a colored area that the view
@@ -150,8 +186,8 @@ func (m Model) fitScale(text string, width int) int {
 func (m Model) bigGlyphs() []bigGlyph {
 	w := m.innerWidth()
 	switch m.screen {
-	case reviewing:
-		item, _, ok := m.session.Current()
+	case reviewing, teaching:
+		item, ok := m.currentItem()
 		if !ok {
 			return nil
 		}
@@ -343,21 +379,25 @@ func (m Model) homeView() string {
 	lines = append(lines, forecastLines(d.Forecast, barW)...)
 	lines = append(lines, "")
 	lines = append(lines, srsLines(d.SRS, barW)...)
-	hint := "q quit"
+	var hint []string
 	if d.Reviews > 0 {
-		hint = "r start reviews   q quit"
+		hint = append(hint, "r reviews")
 	}
-	lines = append(lines, "", dim.Render(hint))
+	if d.LessonsToday > 0 {
+		hint = append(hint, "l lessons")
+	}
+	hint = append(hint, "s settings", "q quit")
+	lines = append(lines, "", dim.Render(strings.Join(hint, "   ")))
 	return strings.Join(lines, "\n")
 }
 
 // tile is one of the dashboard's count tiles.
-type tile struct{ label, count, color string }
+type tile struct{ label, count, note, color string }
 
 func (m Model) tiles() []tile {
 	return []tile{
-		{"Lessons", fmt.Sprint(m.dash.Lessons), typeColors["radical"]},
-		{"Reviews", fmt.Sprint(m.dash.Reviews), typeColors["kanji"]},
+		{"Lessons", fmt.Sprint(m.dash.LessonsToday), fmt.Sprintf("of %d available", m.dash.Lessons), typeColors["radical"]},
+		{"Reviews", fmt.Sprint(m.dash.Reviews), "", typeColors["kanji"]},
 	}
 }
 
@@ -375,7 +415,7 @@ func (m Model) tilesView() string {
 		if m.fitScale(count, tw) > 0 {
 			count = " "
 		}
-		body := strings.Join([]string{t.label, "", "", count, "", ""}, "\n")
+		body := strings.Join([]string{t.label, "", "", count, "", t.note}, "\n")
 		if i > 0 {
 			parts = append(parts, strings.Repeat(" ", tileGap))
 		}
@@ -437,4 +477,211 @@ func srsLines(srs dashboard.SRS, width int) []string {
 		lines = append(lines, fmt.Sprintf("%-12s %5d  %s", dashboard.StageNames[i], n, scaledBar(n, most, width)))
 	}
 	return lines
+}
+
+var tagStyles = map[string]lipgloss.Style{
+	"radical":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(typeColors["radical"])),
+	"kanji":      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(typeColors["kanji"])),
+	"vocabulary": lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(typeColors["vocabulary"])),
+	"meaning":    lipgloss.NewStyle().Bold(true),
+	"reading":    lipgloss.NewStyle().Bold(true),
+}
+
+// markup renders WaniKani mnemonic markup in our colors.
+func markup(s string) string {
+	var sb strings.Builder
+	for _, sp := range lessons.Markup(s) {
+		if st, ok := tagStyles[sp.Tag]; ok {
+			sb.WriteString(st.Render(sp.Text))
+		} else {
+			sb.WriteString(sp.Text)
+		}
+	}
+	return sb.String()
+}
+
+var readingLabels = map[string]string{"onyomi": "On'yomi", "kunyomi": "Kun'yomi", "nanori": "Nanori"}
+
+// teachBody is the current teaching page's text, wrapped to the screen, and
+// how many of its lines fit under the fixed parts of the page. With an
+// unknown height (before the first resize) everything fits.
+func (m Model) teachBody() (lines []string, avail int) {
+	p := m.pages()[m.page]
+	l := m.batch()[p.lesson]
+	var body []string
+	switch p.kind {
+	case meaningPage:
+		body = meaningLines(l)
+	case readingPage:
+		body = readingLines(l)
+	case contextPage:
+		body = contextLines(l)
+	}
+	text := strings.Join(body, "\n")
+	if w := m.innerWidth(); w > 0 {
+		text = lipgloss.NewStyle().Width(w).Render(text)
+	}
+	lines = strings.Split(text, "\n")
+	if m.height == 0 {
+		return lines, len(lines)
+	}
+	// page padding (2), header, blank, block, blank, bar, blank, then after
+	// the text: blank, hint.
+	fixed := 2 + 1 + 1 + lipgloss.Height(m.itemBlock(l.Item)) + 1 + 1 + 1 + 1 + 1
+	return lines, max(m.height-fixed, 2)
+}
+
+func (m Model) teachingView() string {
+	ps := m.pages()
+	p := ps[m.page]
+	l := m.batch()[p.lesson]
+	name, bar := "meaning", meaningBar
+	switch p.kind {
+	case readingPage:
+		name, bar = "reading", readingBar
+	case contextPage:
+		name = "context"
+	}
+	if w := m.innerWidth(); w > 0 {
+		bar = bar.Width(w).Align(lipgloss.Center)
+	}
+	// Bubble Tea drops the top of a frame taller than the screen, which would
+	// push the block out from under the big glyph, so long text scrolls.
+	lines, avail := m.teachBody()
+	shown := lines
+	if len(lines) > avail {
+		start := min(m.scroll, len(lines)-avail)
+		if start+avail < len(lines) {
+			shown = append(slices.Clone(lines[start:start+avail-1]), dim.Render("↓ more (↑↓ scroll)"))
+		} else {
+			shown = lines[start:]
+		}
+	}
+	return strings.Join([]string{
+		dim.Render(fmt.Sprintf("Lesson %d of %d   page %d of %d",
+			m.batchStart+p.lesson+1, len(m.plan.Lessons), m.page+1, len(ps))),
+		"",
+		m.itemBlock(l.Item),
+		"",
+		bar.Render(typeLabel(l.Type) + " " + name),
+		"",
+		strings.Join(shown, "\n"),
+		"",
+		dim.Render("← → pages   ↑↓ scroll   enter next   q dashboard   esc quit"),
+	}, "\n")
+}
+
+func meaningLines(l lessons.Lesson) []string {
+	lines := []string{title.Render(l.Meanings[0])}
+	if len(l.Meanings) > 1 {
+		lines = append(lines, dim.Render("also: "+strings.Join(l.Meanings[1:], ", ")))
+	}
+	if len(l.PartsOfSpeech) > 0 {
+		lines = append(lines, dim.Render(strings.Join(l.PartsOfSpeech, ", ")))
+	}
+	if len(l.Components) > 0 {
+		var parts []string
+		for _, c := range l.Components {
+			st := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(typeColors[c.Type]))
+			parts = append(parts, strings.TrimSpace(st.Render(c.Characters)+" "+c.Meaning))
+		}
+		lines = append(lines, "", "Made of: "+strings.Join(parts, ", "))
+	}
+	if l.MeaningMnemonic != "" {
+		lines = append(lines, "", markup(l.MeaningMnemonic))
+	}
+	if l.MeaningHint != "" {
+		lines = append(lines, "", dim.Render("Hint: ")+markup(l.MeaningHint))
+	}
+	return lines
+}
+
+func readingLines(l lessons.Lesson) []string {
+	var lines []string
+	if len(l.KanjiReadings) > 0 {
+		for _, kind := range []string{"onyomi", "kunyomi", "nanori"} {
+			var rs []string
+			for _, r := range l.KanjiReadings {
+				if r.Type != kind {
+					continue
+				}
+				if r.Accepted {
+					rs = append(rs, title.Render(r.Reading))
+				} else {
+					rs = append(rs, dim.Render(r.Reading))
+				}
+			}
+			if len(rs) > 0 {
+				lines = append(lines, fmt.Sprintf("%-9s %s", readingLabels[kind], strings.Join(rs, "、")))
+			}
+		}
+	} else {
+		lines = append(lines, title.Render(strings.Join(l.Readings, "、")))
+	}
+	if l.ReadingMnemonic != "" {
+		lines = append(lines, "", markup(l.ReadingMnemonic))
+	}
+	if l.ReadingHint != "" {
+		lines = append(lines, "", dim.Render("Hint: ")+markup(l.ReadingHint))
+	}
+	return lines
+}
+
+func contextLines(l lessons.Lesson) []string {
+	var lines []string
+	for _, s := range l.Sentences {
+		lines = append(lines, s.Ja, dim.Render(s.En), "")
+	}
+	return lines
+}
+
+func (m Model) lessonSummaryView() string {
+	lines := []string{title.Render("Lessons done")}
+	if len(m.plan.Lessons) == 0 {
+		lines = append(lines, "No lessons left today with your settings (s on the dashboard).")
+	} else {
+		lines = append(lines, fmt.Sprintf("%d started on WaniKani: they are in your reviews now.", m.started))
+	}
+	if m.inFlight > 0 {
+		lines = append(lines, fmt.Sprintf("Starting %d...", m.inFlight))
+	}
+	switch {
+	case m.startFailed > 0 && m.startForbidden():
+		lines = append(lines, "",
+			fmt.Sprintf("%d could not be started: your API token lacks the assignments:start permission.", m.startFailed),
+			"Make a token with it at https://www.wanikani.com/settings/personal_access_tokens,",
+			"then press t to enter it. The items stay in your lessons.")
+	case m.startFailed > 0:
+		lines = append(lines, "", fmt.Sprintf("%d could not be started (%v). They stay in your lessons.", m.startFailed, m.startErr))
+	}
+	lines = append(lines, "", dim.Render("Enter for the dashboard, Esc to quit"))
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) settingsView() string {
+	s := m.settings
+	check := func(on bool) string {
+		if on {
+			return "[x]"
+		}
+		return "[ ]"
+	}
+	rows := [settingRows][2]string{
+		{"Daily lesson cap", fmt.Sprintf("‹ %d ›", s.DailyCap)},
+		{"Order", fmt.Sprintf("‹ %s ›", s.Order)},
+		{"Radicals", check(s.Types.Radical)},
+		{"Kanji", check(s.Types.Kanji)},
+		{"Vocabulary", check(s.Types.Vocabulary)},
+		{"Batch size", fmt.Sprintf("‹ %d ›", s.BatchSize)},
+	}
+	lines := []string{title.Render("Lesson settings"), ""}
+	for i, r := range rows {
+		cursor := "  "
+		if i == m.settingRow {
+			cursor = "> "
+		}
+		lines = append(lines, fmt.Sprintf("%s%-18s %s", cursor, r[0], r[1]))
+	}
+	lines = append(lines, "", dim.Render("↑↓ choose   ←→ change   space toggle   esc save"))
+	return strings.Join(lines, "\n")
 }

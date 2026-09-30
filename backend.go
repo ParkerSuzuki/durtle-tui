@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
+	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/store"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
@@ -32,9 +33,9 @@ type backend struct {
 
 // Cache versions change whenever the cached type gains fields, so an older
 // cache (which never stored them) is refetched in full. Subjects went to 3
-// for level and hidden_at.
+// for level and hidden_at, and 4 for the teaching fields.
 const (
-	subjectCacheVersion    = 3
+	subjectCacheVersion    = 4
 	assignmentCacheVersion = 1
 )
 
@@ -96,7 +97,15 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	if err != nil {
 		return none, err
 	}
-	return dashboard.Build(time.Now(), user.Level, sum, assignments, subjects), nil
+	settings, err := b.loadSettings(user.Preferences.LessonsBatchSize)
+	if err != nil {
+		return none, err
+	}
+	now := time.Now()
+	d := dashboard.Build(now, user.Level, sum, assignments, subjects)
+	d.LessonsToday = len(lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)),
+		lessons.StartedToday(now, startTimes(assignments)), settings))
+	return d, nil
 }
 
 // Login checks the token against the API and saves it.
@@ -379,4 +388,165 @@ func readingKind(t string) string {
 		return "kun'yomi"
 	}
 	return t // "nanori" or ""
+}
+
+// loadSettings reads settings.json, clamped. A missing or corrupt file is
+// replaced by defaults seeded with the user's WaniKani batch size.
+func (b *backend) loadSettings(waniKaniBatch int) (lessons.Settings, error) {
+	path, err := store.ConfigFile("settings.json")
+	if err != nil {
+		return lessons.Settings{}, err
+	}
+	var s lessons.Settings
+	if err := store.ReadJSON(path, &s); err != nil || s == (lessons.Settings{}) {
+		s = lessons.Default(waniKaniBatch)
+		return s, store.WriteJSON(path, s)
+	}
+	return s.Clamp(), nil
+}
+
+// Settings returns the lesson rules for the settings screen.
+func (b *backend) Settings() (lessons.Settings, error) { return b.loadSettings(0) }
+
+// SaveSettings stores the lesson rules, clamped.
+func (b *backend) SaveSettings(s lessons.Settings) error {
+	path, err := store.ConfigFile("settings.json")
+	if err != nil {
+		return err
+	}
+	return store.WriteJSON(path, s.Clamp())
+}
+
+// lessonCandidates lists lessons available now: the summary's lesson
+// subject IDs joined with their assignments and subjects, minus hidden ones.
+func lessonCandidates(now time.Time, sum wanikani.Summary,
+	assignments map[int]wanikani.Resource[wanikani.Assignment],
+	subjects map[int]wanikani.Resource[wanikani.Subject],
+	keep func(wanikani.Resource[wanikani.Subject]) bool) []lessons.Candidate {
+	bySubject := map[int]int{} // subject ID -> assignment ID
+	for _, a := range assignments {
+		bySubject[a.Data.SubjectID] = a.ID
+	}
+	var out []lessons.Candidate
+	for _, e := range sum.Lessons {
+		if e.AvailableAt.After(now) {
+			continue
+		}
+		for _, id := range e.SubjectIDs {
+			s, ok := subjects[id]
+			aid, has := bySubject[id]
+			if !ok || !has || s.Data.HiddenAt != nil || !keep(s) {
+				continue
+			}
+			out = append(out, lessons.Candidate{AssignmentID: aid, SubjectID: id, Level: s.Data.Level, Type: s.Object})
+		}
+	}
+	return out
+}
+
+// drawable reports whether a subject can be shown: it has characters, or it
+// is an image-only radical whose picture can be rasterized. Undrawable ones
+// must not take daily-cap slots they can never use.
+func (b *backend) drawable(ctx context.Context) func(wanikani.Resource[wanikani.Subject]) bool {
+	return func(s wanikani.Resource[wanikani.Subject]) bool {
+		return s.Data.Characters != nil || b.radicalImage(ctx, s) != nil
+	}
+}
+
+// startTimes lists when every started assignment was started.
+func startTimes(assignments map[int]wanikani.Resource[wanikani.Assignment]) []time.Time {
+	var out []time.Time
+	for _, a := range assignments {
+		if a.Data.StartedAt != nil {
+			out = append(out, *a.Data.StartedAt)
+		}
+	}
+	return out
+}
+
+// Lessons picks today's lessons by the user's settings and adds teaching
+// content. Image-only radicals that cannot be drawn are left out.
+func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
+	var none lessons.Plan
+	if err := b.connect(); err != nil {
+		return none, err
+	}
+	subjects, err := b.syncSubjects(ctx)
+	if err != nil {
+		return none, err
+	}
+	assignments, err := b.syncAssignments(ctx)
+	if err != nil {
+		return none, err
+	}
+	synonyms, err := b.syncSynonyms(ctx)
+	if err != nil {
+		return none, err
+	}
+	user, err := b.client.User(ctx)
+	if err != nil {
+		return none, err
+	}
+	sum, err := b.client.Summary(ctx)
+	if err != nil {
+		return none, err
+	}
+	settings, err := b.loadSettings(user.Preferences.LessonsBatchSize)
+	if err != nil {
+		return none, err
+	}
+	now := time.Now()
+	picked := lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)), lessons.StartedToday(now, startTimes(assignments)), settings)
+	due := make([]wanikani.Resource[wanikani.Assignment], 0, len(picked))
+	for _, c := range picked {
+		due = append(due, assignments[c.AssignmentID])
+	}
+	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	items, _ := buildItems(due, subjects, synonyms, art)
+	return lessons.Plan{Lessons: buildLessons(items, assignments, subjects), BatchSize: settings.BatchSize}, nil
+}
+
+// buildLessons adds each item's teaching content from its subject.
+func buildLessons(items []review.Item, assignments map[int]wanikani.Resource[wanikani.Assignment],
+	subjects map[int]wanikani.Resource[wanikani.Subject]) []lessons.Lesson {
+	out := make([]lessons.Lesson, 0, len(items))
+	for _, it := range items {
+		s := subjects[assignments[it.AssignmentID].Data.SubjectID].Data
+		l := lessons.Lesson{Item: it, MeaningMnemonic: s.MeaningMnemonic, MeaningHint: s.MeaningHint,
+			ReadingMnemonic: s.ReadingMnemonic, ReadingHint: s.ReadingHint, PartsOfSpeech: s.PartsOfSpeech}
+		if it.Type == "kanji" {
+			for _, r := range s.Readings {
+				l.KanjiReadings = append(l.KanjiReadings, lessons.KanjiReading{Reading: r.Reading, Type: r.Type, Accepted: r.AcceptedAnswer})
+			}
+		}
+		for _, id := range s.ComponentSubjectIDs {
+			c, ok := subjects[id]
+			if !ok {
+				continue
+			}
+			comp := lessons.Component{Type: c.Object}
+			if c.Data.Characters != nil {
+				comp.Characters = *c.Data.Characters
+			}
+			for _, m := range c.Data.Meanings {
+				if m.Primary {
+					comp.Meaning = m.Meaning
+				}
+			}
+			l.Components = append(l.Components, comp)
+		}
+		for _, cs := range s.ContextSentences[:min(len(s.ContextSentences), 3)] {
+			l.Sentences = append(l.Sentences, lessons.Sentence{Ja: cs.Ja, En: cs.En})
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// StartLesson starts one lesson on WaniKani.
+func (b *backend) StartLesson(ctx context.Context, assignmentID int) error {
+	if err := b.connect(); err != nil {
+		return err
+	}
+	return b.client.StartAssignment(ctx, assignmentID)
 }

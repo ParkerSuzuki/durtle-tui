@@ -60,3 +60,12 @@ func TestJSON(t *testing.T) {
 		t.Error("corrupt file should return an error")
 	}
 }
+
+func TestConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	got, err := ConfigFile("settings.json")
+	if err != nil || got != filepath.Join(dir, "durtle-tui", "settings.json") {
+		t.Errorf("ConfigFile = %q, %v", got, err)
+	}
+}

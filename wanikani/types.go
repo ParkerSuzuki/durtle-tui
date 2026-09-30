@@ -26,6 +26,19 @@ type Subject struct {
 	CharacterImages   []CharacterImage `json:"character_images"` // for radicals with no characters
 	Level             int              `json:"level"`
 	HiddenAt          *time.Time       `json:"hidden_at"`
+
+	MeaningMnemonic     string            `json:"meaning_mnemonic"`
+	MeaningHint         string            `json:"meaning_hint"` // null decodes to ""
+	ReadingMnemonic     string            `json:"reading_mnemonic"`
+	ReadingHint         string            `json:"reading_hint"`
+	ContextSentences    []ContextSentence `json:"context_sentences"`
+	PartsOfSpeech       []string          `json:"parts_of_speech"`
+	ComponentSubjectIDs []int             `json:"component_subject_ids"`
+}
+
+type ContextSentence struct {
+	En string `json:"en"`
+	Ja string `json:"ja"`
 }
 
 type CharacterImage struct {
@@ -77,6 +90,11 @@ type StudyMaterial struct {
 }
 
 type User struct {
-	Username string `json:"username"`
-	Level    int    `json:"level"`
+	Username    string      `json:"username"`
+	Level       int         `json:"level"`
+	Preferences Preferences `json:"preferences"`
+}
+
+type Preferences struct {
+	LessonsBatchSize int `json:"lessons_batch_size"`
 }

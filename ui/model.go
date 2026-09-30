@@ -11,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
+	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
@@ -21,6 +22,10 @@ type Backend interface {
 	Load(ctx context.Context) (items []review.Item, skipped int, err error)
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 	Dashboard(ctx context.Context) (dashboard.Dashboard, error)
+	Lessons(ctx context.Context) (lessons.Plan, error)
+	StartLesson(ctx context.Context, assignmentID int) error
+	Settings() (lessons.Settings, error)
+	SaveSettings(s lessons.Settings) error
 }
 
 // inputWidth fits a WaniKani token (36 characters) with room to spare.
@@ -35,6 +40,9 @@ const (
 	summary
 	failed
 	home // the dashboard
+	teaching
+	lessonSummary
+	settingsScreen
 )
 
 type (
@@ -48,8 +56,18 @@ type (
 		d   dashboard.Dashboard
 		err error
 	}
-	drawBigMsg   struct{}
-	refreshMsg   struct{ at time.Time } // time to reload the dashboard
+	drawBigMsg struct{}
+	refreshMsg struct{ at time.Time } // time to reload the dashboard
+	lessonsMsg struct {
+		plan lessons.Plan
+		err  error
+	}
+	startedMsg  struct{ err error }
+	settingsMsg struct {
+		s   lessons.Settings
+		err error
+	}
+	savedMsg     struct{ err error }
 	submittedMsg struct {
 		pending bool
 		err     error
@@ -78,6 +96,19 @@ type Model struct {
 	dash           dashboard.Dashboard
 	loadingReviews bool      // which load a retry repeats: reviews or the dashboard
 	refreshAt      time.Time // when the dashboard reloads itself; stale timers are ignored
+
+	plan           lessons.Plan
+	batchStart     int  // index of the first lesson in the current batch
+	page           int  // teaching page within the batch
+	lessonMode     bool // the reviewing screen is a lesson quiz
+	loadingLessons bool
+	started        int // lessons started on WaniKani this session
+	startFailed    int
+	startErr       error
+	settings       lessons.Settings // being edited on the settings screen
+	settingRow     int
+	height         int // terminal rows, 0 before the first resize
+	scroll         int // first visible text line on a teaching page
 }
 
 // refreshSlack is how long after a forecast hour the dashboard reloads,
@@ -122,6 +153,7 @@ func (m Model) loadFailed(err error) (tea.Model, tea.Cmd) {
 // toDashboard ends the review screens and reloads the dashboard.
 func (m Model) toDashboard() (tea.Model, tea.Cmd) {
 	m.screen, m.loadingReviews = loading, false
+	m.lessonMode, m.loadingLessons = false, false
 	m.feedback = ""
 	m.input.Reset()
 	return m, m.loadDashboard()
@@ -131,8 +163,98 @@ func (m Model) startReviews() (tea.Model, tea.Cmd) {
 	if m.dash.Reviews == 0 {
 		return m, nil
 	}
-	m.screen, m.loadingReviews = loading, true
+	m.screen, m.loadingReviews, m.loadingLessons = loading, true, false
 	return m, m.load()
+}
+
+func (m Model) loadLessons() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		p, err := m.backend.Lessons(ctx)
+		return lessonsMsg{p, err}
+	}
+}
+
+func (m Model) startLesson(id int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return startedMsg{m.backend.StartLesson(ctx, id)}
+	}
+}
+
+func (m Model) startLessons() (tea.Model, tea.Cmd) {
+	if m.dash.LessonsToday == 0 {
+		return m, nil
+	}
+	m.screen, m.loadingReviews, m.loadingLessons = loading, false, true
+	return m, m.loadLessons()
+}
+
+// batch is the lessons being taught or quizzed right now.
+func (m Model) batch() []lessons.Lesson {
+	end := min(m.batchStart+m.plan.BatchSize, len(m.plan.Lessons))
+	return m.plan.Lessons[m.batchStart:end]
+}
+
+type pageKind int
+
+const (
+	meaningPage pageKind = iota
+	readingPage
+	contextPage
+)
+
+// teachPage is one teaching screen: a lesson in the batch and which page.
+type teachPage struct {
+	lesson int
+	kind   pageKind
+}
+
+func (m Model) pages() []teachPage {
+	var ps []teachPage
+	for i, l := range m.batch() {
+		ps = append(ps, teachPage{i, meaningPage})
+		if l.HasReading() {
+			ps = append(ps, teachPage{i, readingPage})
+		}
+		if len(l.Sentences) > 0 {
+			ps = append(ps, teachPage{i, contextPage})
+		}
+	}
+	return ps
+}
+
+// quiz starts the back-to-back quiz on the current batch.
+func (m Model) quiz() (tea.Model, tea.Cmd) {
+	var items []review.Item
+	for _, l := range m.batch() {
+		items = append(items, l.Item)
+	}
+	m.session = review.NewSession(items, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
+	m.screen, m.lessonMode, m.feedback, m.bigDrawn = reviewing, true, "", ""
+	m.input.Reset()
+	return m, nil
+}
+
+// nextBatch moves on after a quiz: teach the next batch, or show the summary.
+func (m Model) nextBatch() Model {
+	m.batchStart += m.plan.BatchSize
+	m.lessonMode, m.bigDrawn = false, ""
+	if m.batchStart >= len(m.plan.Lessons) {
+		m.screen = lessonSummary
+		return m
+	}
+	m.screen, m.page = teaching, 0
+	return m
+}
+
+// startForbidden reports whether a lesson start failed for lack of the
+// assignments:start token permission.
+func (m Model) startForbidden() bool {
+	var apiErr *wanikani.APIError
+	return errors.As(m.startErr, &apiErr) && apiErr.Status == 403
 }
 
 func (m Model) load() tea.Cmd {
@@ -192,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 		// The text area is the inner width minus the "> " prompt and the cursor.
 		m.input.SetWidth(max(m.innerWidth()-3, 10))
 		return m, nil
@@ -208,7 +330,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.EchoMode = textinput.EchoNormal
 		m.input.Placeholder = ""
 		m.input.Reset()
-		m.loadingReviews = false
+		m.loadingReviews, m.loadingLessons = false, false
 		return m, m.loadDashboard()
 	case dashboardMsg:
 		if msg.err != nil {
@@ -229,6 +351,45 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // replaced by a newer refresh, or we moved on
 		}
 		return m, m.loadDashboard() // stays on the dashboard while it reloads
+	case lessonsMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		m.plan, m.batchStart, m.page, m.scroll, m.bigDrawn = msg.plan, 0, 0, 0, ""
+		m.started, m.startFailed, m.startErr = 0, 0, nil
+		m.screen = teaching
+		if len(m.plan.Lessons) == 0 {
+			m.screen = lessonSummary
+		}
+		return m, nil
+	case startedMsg:
+		m.inFlight--
+		if msg.err != nil {
+			m.startFailed++
+			m.startErr = msg.err
+			if m.startForbidden() && (m.lessonMode || m.screen == teaching) {
+				// Nothing can be started with this token: stop now and explain,
+				// rather than after every remaining batch.
+				m.screen, m.lessonMode = lessonSummary, false
+			}
+		} else {
+			m.started++
+		}
+		if m.quitting && m.inFlight == 0 {
+			return m, tea.Quit
+		}
+		return m, nil
+	case settingsMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		m.settings, m.settingRow, m.screen = msg.s, 0, settingsScreen
+		return m, nil
+	case savedMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		return m.toDashboard() // the lesson count depends on the settings
 	case submittedMsg:
 		m.inFlight--
 		var apiErr *wanikani.APIError
@@ -253,10 +414,47 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "r", "enter":
 				return m.startReviews()
+			case "l":
+				return m.startLessons()
+			case "s":
+				return m, m.loadSettings()
 			case "q", "esc", "ctrl+c":
 				return m.quit()
 			}
 			return m, nil
+		}
+		if m.screen == settingsScreen {
+			return m.settingsKey(msg.String())
+		}
+		if m.screen == teaching {
+			last := len(m.pages()) - 1
+			switch msg.String() {
+			case "right", "enter":
+				m.scroll = 0
+				if m.page < last {
+					m.page++
+					return m, nil
+				}
+				return m.quiz()
+			case "left":
+				m.page, m.scroll = max(m.page-1, 0), 0
+				return m, nil
+			case "down":
+				lines, avail := m.teachBody()
+				m.scroll = min(m.scroll+1, max(len(lines)-avail, 0))
+				return m, nil
+			case "up":
+				m.scroll = max(m.scroll-1, 0)
+				return m, nil
+			case "q":
+				return m.toDashboard()
+			case "esc", "ctrl+c":
+				return m.quit()
+			}
+			return m, nil
+		}
+		if m.screen == lessonSummary && msg.String() == "t" && m.startForbidden() {
+			return m.loadFailed(wanikani.ErrUnauthorized) // token entry
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
@@ -303,11 +501,14 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		}
 	case failed:
 		m.screen, m.err = loading, nil
+		if m.loadingLessons {
+			return m, m.loadLessons()
+		}
 		if m.loadingReviews {
 			return m, m.load()
 		}
 		return m, m.loadDashboard()
-	case summary:
+	case summary, lessonSummary:
 		return m.toDashboard()
 	case reviewing:
 		return m.answer()
@@ -349,10 +550,18 @@ func (m Model) answer() (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if sub != nil {
 		m.inFlight++
-		cmd = m.submit(*sub)
+		if m.lessonMode {
+			cmd = m.startLesson(sub.AssignmentID) // lessons start; they are never reviews
+		} else {
+			cmd = m.submit(*sub)
+		}
 	}
 	if _, _, ok := m.session.Current(); !ok {
-		m.screen = summary
+		if m.lessonMode {
+			m = m.nextBatch()
+		} else {
+			m.screen = summary
+		}
 	}
 	return m, cmd
 }
@@ -389,5 +598,62 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.quitting = true
+	return m, nil
+}
+
+const settingRows = 6 // daily cap, order, radicals, kanji, vocabulary, batch size
+
+func (m Model) loadSettings() tea.Cmd {
+	return func() tea.Msg {
+		s, err := m.backend.Settings()
+		return settingsMsg{s, err}
+	}
+}
+
+func (m Model) saveSettings() tea.Cmd {
+	s := m.settings // a copy: the command runs later, on another goroutine
+	return func() tea.Msg { return savedMsg{m.backend.SaveSettings(s)} }
+}
+
+func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
+	s := &m.settings
+	prev := *s
+	switch key {
+	case "up":
+		m.settingRow = (m.settingRow + settingRows - 1) % settingRows
+	case "down":
+		m.settingRow = (m.settingRow + 1) % settingRows
+	case "left", "right", "space":
+		d := 1
+		if key == "left" {
+			d = -1
+		}
+		switch m.settingRow {
+		case 0:
+			s.DailyCap += d
+		case 1:
+			if s.Order == lessons.Classic {
+				s.Order = lessons.Interleaved
+			} else {
+				s.Order = lessons.Classic
+			}
+		case 2:
+			s.Types.Radical = !s.Types.Radical
+		case 3:
+			s.Types.Kanji = !s.Types.Kanji
+		case 4:
+			s.Types.Vocabulary = !s.Types.Vocabulary
+		case 5:
+			s.BatchSize += d
+		}
+		if s.Types == (lessons.Types{}) {
+			*s = prev // at least one type stays on
+		}
+		*s = s.Clamp()
+	case "esc", "enter":
+		return m, m.saveSettings()
+	case "ctrl+c":
+		return m.quit()
+	}
 	return m, nil
 }

@@ -2,6 +2,7 @@ package wanikani
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -70,4 +71,11 @@ func (c *Client) SubmitReview(ctx context.Context, assignmentID, incorrectMeanin
 		"incorrect_reading_answers": incorrectReading,
 	}}
 	return c.do(ctx, http.MethodPost, c.base+"reviews", body, nil)
+}
+
+// StartAssignment starts a lesson: the item moves to Apprentice 1 and
+// enters the review queue. Needs the assignments:start token permission.
+func (c *Client) StartAssignment(ctx context.Context, assignmentID int) error {
+	body := map[string]any{"assignment": map[string]any{}}
+	return c.do(ctx, http.MethodPut, fmt.Sprintf("%sassignments/%d/start", c.base, assignmentID), body, nil)
 }
