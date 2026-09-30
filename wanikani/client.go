@@ -42,7 +42,9 @@ type Client struct {
 
 // NewClient returns a client for baseURL (normally BaseURL; tests pass a local server).
 func NewClient(baseURL, token string) *Client {
-	return &Client{base: baseURL, token: token, http: &http.Client{Timeout: 30 * time.Second}}
+	// No client-wide timeout: every call carries a context deadline, and a
+	// fixed 30 s limit also cut off large pages on slow connections.
+	return &Client{base: baseURL, token: token, http: &http.Client{}}
 }
 
 // do sends one request, waiting and retrying while rate limited, and decodes

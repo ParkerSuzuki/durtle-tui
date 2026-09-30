@@ -79,6 +79,18 @@ func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
 	return days, store.WriteJSON(daysPath, days)
 }
 
+// newest is the latest DataUpdatedAt among rs, or since when none is later.
+// The next incremental sync asks for changes after it: WaniKani's own clock,
+// so a skewed local clock cannot skip updates.
+func newest[T any](since time.Time, rs []wanikani.Resource[T]) time.Time {
+	for _, r := range rs {
+		if r.DataUpdatedAt.After(since) {
+			since = r.DataUpdatedAt
+		}
+	}
+	return since
+}
+
 // connect makes sure there is a client, loading the saved token if needed.
 func (b *backend) connect() error {
 	if b.client != nil {
@@ -192,7 +204,6 @@ func syncResources[T any](path string, version int,
 	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != version {
 		cache = resourceCache[T]{Version: version}
 	}
-	started := time.Now()
 	fresh, err := fetch(cache.SyncedAt)
 	if err != nil {
 		return nil, err
@@ -206,7 +217,7 @@ func syncResources[T any](path string, version int,
 	for _, r := range fresh {
 		cache.Items[r.ID] = r
 	}
-	cache.SyncedAt = started
+	cache.SyncedAt = newest(cache.SyncedAt, fresh)
 	return cache.Items, store.WriteJSON(path, cache)
 }
 
@@ -230,7 +241,6 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	if err := store.ReadJSON(path, &cache); err != nil {
 		cache = synonymCache{}
 	}
-	started := time.Now()
 	fresh, err := b.client.StudyMaterials(ctx, cache.SyncedAt)
 	if err != nil {
 		return nil, err
@@ -241,7 +251,7 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	for _, m := range fresh {
 		cache.Synonyms[m.Data.SubjectID] = m.Data.MeaningSynonyms
 	}
-	cache.SyncedAt = started
+	cache.SyncedAt = newest(cache.SyncedAt, fresh)
 	return cache.Synonyms, store.WriteJSON(path, cache)
 }
 
@@ -281,10 +291,15 @@ func (b *backend) flushPending(ctx context.Context) error {
 		return nil
 	}
 	var keep []review.Submission
-	for _, s := range list {
+	for i, s := range list {
 		err := b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
 		if errors.Is(err, wanikani.ErrUnauthorized) {
-			return err // leave the file as is; retry after a new token
+			// Keep this answer and the untried ones for after a new token;
+			// drop the ones already accepted so they are not sent twice.
+			if werr := store.WriteJSON(b.pendingPath(), append(keep, list[i:]...)); werr != nil {
+				return werr
+			}
+			return err
 		}
 		if err != nil && !rejected(err) {
 			keep = append(keep, s)

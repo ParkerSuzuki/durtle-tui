@@ -232,7 +232,7 @@ func TestDashboard(t *testing.T) {
 	})
 	mux.HandleFunc("/assignments", func(w http.ResponseWriter, r *http.Request) {
 		assignmentQueries = append(assignmentQueries, r.URL.RawQuery)
-		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data_updated_at":"2026-01-02T00:00:00Z","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
 	})
 	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
@@ -421,5 +421,47 @@ func TestAccuracyAcrossSyncs(t *testing.T) {
 	correct = 13 // three more correct meaning answers since
 	if d, err = b.Dashboard(context.Background()); err != nil || d.Today.Correct != 3 || d.Today.Incorrect != 0 {
 		t.Errorf("today = %+v, %v; want 3 correct", d.Today, err)
+	}
+}
+
+// Incremental sync asks for changes after WaniKani's own newest timestamp,
+// not the local clock, so a skewed clock cannot skip updates.
+func TestSyncUsesServerTimestamps(t *testing.T) {
+	var queries []string
+	stamp := "2026-01-02T03:04:05Z"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("updated_after"))
+		if len(queries) == 1 {
+			fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":%q,"data":{}}]}`, stamp)
+			return
+		}
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	for range 3 {
+		if _, err := b.syncSubjects(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if queries[0] != "" || queries[1] != stamp || queries[2] != stamp {
+		t.Errorf("updated_after per sync = %q; want \"\", then the server's newest timestamp twice", queries)
+	}
+}
+
+// If the token is rejected partway through resending saved answers, the
+// ones already accepted must not stay queued.
+func TestFlushPendingStopsOn401WithoutResending(t *testing.T) {
+	b, _ := fakeAPI(t, http.StatusCreated, http.StatusUnauthorized, http.StatusCreated)
+	list := []review.Submission{{AssignmentID: 1}, {AssignmentID: 2}, {AssignmentID: 3}}
+	if err := store.WriteJSON(filepath.Join(b.dir, "pending.json"), list); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.flushPending(context.Background()); !errors.Is(err, wanikani.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if got := readPending(t, b); len(got) != 2 || got[0].AssignmentID != 2 || got[1].AssignmentID != 3 {
+		t.Errorf("kept %v, want 2 and 3 (1 was already accepted)", got)
 	}
 }
