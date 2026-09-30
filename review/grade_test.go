@@ -85,3 +85,18 @@ func TestTypoTolerance(t *testing.T) {
 		}
 	}
 }
+
+// Typing the meaning into the reading box (it gets converted to kana as you
+// type) should say so, not complain about kana.
+func TestMeaningTypedAsReading(t *testing.T) {
+	mankind := Item{Type: "vocabulary", Characters: "人類",
+		Meanings: []string{"Mankind", "Humanity"}, Readings: []string{"じんるい"}}
+	typed := ToHiragana("mankind", true) // what the box shows: まんきんd
+	g := GradeReading(mankind, typed)
+	if g.Verdict != Warn || !strings.Contains(g.Hint, "meaning") {
+		t.Errorf("GradeReading(%q) = %+v, want a Warn saying that is the meaning", typed, g)
+	}
+	if got := GradeReading(mankind, "zzz").Hint; strings.Contains(got, "meaning") {
+		t.Errorf("unrelated latin input got the meaning hint: %q", got)
+	}
+}
