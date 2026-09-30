@@ -14,17 +14,35 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
+	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
 
 type fakeBackend struct {
-	items     []review.Item
-	loadErr   error
-	submitted []review.Submission
-	submitErr error
-	dash      dashboard.Dashboard
-	dashErr   error
+	items      []review.Item
+	loadErr    error
+	submitted  []review.Submission
+	submitErr  error
+	dash       dashboard.Dashboard
+	dashErr    error
+	plan       lessons.Plan
+	planErr    error
+	startErr   error
+	startedIDs []int
+	settings   lessons.Settings
+	saved      []lessons.Settings
+}
+
+func (f *fakeBackend) Lessons(context.Context) (lessons.Plan, error) { return f.plan, f.planErr }
+func (f *fakeBackend) StartLesson(_ context.Context, id int) error {
+	f.startedIDs = append(f.startedIDs, id)
+	return f.startErr
+}
+func (f *fakeBackend) Settings() (lessons.Settings, error) { return f.settings, nil }
+func (f *fakeBackend) SaveSettings(s lessons.Settings) error {
+	f.saved = append(f.saved, s)
+	return nil
 }
 
 func (f *fakeBackend) Dashboard(context.Context) (dashboard.Dashboard, error) {
@@ -373,7 +391,7 @@ func TestSkippedRadicalsNoted(t *testing.T) {
 	}
 }
 
-var sampleDash = dashboard.Dashboard{Level: 12, Lessons: 5, Reviews: 67,
+var sampleDash = dashboard.Dashboard{Level: 12, Lessons: 60, LessonsToday: 5, Reviews: 67,
 	Forecast: []dashboard.Hour{{At: time.Date(2026, 9, 30, 15, 0, 0, 0, time.Local), Added: 12, Total: 79}},
 	Progress: dashboard.Progress{Radicals: 10, RadicalsPassed: 9, Kanji: 33, KanjiPassed: 21, KanjiNeeded: 30},
 	SRS:      dashboard.SRS{88, 143, 97, 201, 12}}
@@ -585,5 +603,148 @@ func TestFailedScreenSaysWhatFailed(t *testing.T) {
 func TestProgressBarShowsAnyProgress(t *testing.T) {
 	if got := stripANSI(progressBar(1, 32, 20, "#E9A23B")); !strings.HasPrefix(got, "█") {
 		t.Errorf("1 of 32 drew no filled cell: %q", got)
+	}
+}
+
+var (
+	lessonKanji = lessons.Lesson{
+		Item: review.Item{AssignmentID: 21, Type: "kanji", Characters: "二",
+			Meanings: []string{"Two"}, Readings: []string{"に"}, OtherReadings: []string{"ふた"}, ReadingKind: "on'yomi"},
+		MeaningMnemonic: "two <radical>lines</radical>",
+		KanjiReadings:   []lessons.KanjiReading{{Reading: "に", Type: "onyomi", Accepted: true}, {Reading: "ふた", Type: "kunyomi"}},
+		Components:      []lessons.Component{{Characters: "一", Meaning: "Ground", Type: "radical"}},
+	}
+	lessonRadical = lessons.Lesson{Item: review.Item{AssignmentID: 11, Type: "radical", Characters: "一", Meanings: []string{"Ground"}}}
+)
+
+// lessonModel is the dashboard with lessons due, then l pressed and loaded.
+func lessonModel(t *testing.T, fb *fakeBackend) Model {
+	t.Helper()
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{LessonsToday: len(fb.plan.Lessons)}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if cmd == nil {
+		t.Fatal("l did not load lessons")
+	}
+	m, _ = step(t, m, cmd())
+	return m
+}
+
+func TestLessonKeyNeedsLessonsToday(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), dashboardMsg{d: dashboard.Dashboard{Lessons: 60, LessonsToday: 0}})
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"}); cmd != nil || next.screen != home {
+		t.Errorf("l with the cap used up: screen %v, cmd %v", next.screen, cmd)
+	}
+}
+
+func TestTeachingPages(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical, lessonKanji}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	if m.screen != teaching || len(m.pages()) != 3 { // radical: meaning; kanji: meaning, reading
+		t.Fatalf("screen %v, pages %d; want teaching with 3 pages", m.screen, len(m.pages()))
+	}
+	got := stripANSI(m.View().Content)
+	if !strings.Contains(got, "Ground") {
+		t.Errorf("first page should teach the radical:\n%s", got)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "lines") || !strings.Contains(got, "一 Ground") {
+		t.Errorf("kanji meaning page should show the mnemonic and components:\n%s", got)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "On'yomi") || !strings.Contains(got, "ふた") {
+		t.Errorf("reading page:\n%s", got)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if m.page != 1 {
+		t.Errorf("left: page %d, want 1", m.page)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}) // last page: quiz
+	if m.screen != reviewing || !m.lessonMode || m.session.Total() != 2 {
+		t.Fatalf("screen %v lessonMode %v; want the quiz", m.screen, m.lessonMode)
+	}
+}
+
+// answerAll answers every quiz question correctly and returns the commands.
+func answerAll(t *testing.T, m Model) (Model, []tea.Cmd) {
+	t.Helper()
+	var cmds []tea.Cmd
+	for m.screen == reviewing {
+		it, part, _ := m.session.Current()
+		ans := it.Meanings[0]
+		if part == review.Reading {
+			ans = it.Readings[0]
+		}
+		var cmd tea.Cmd
+		m, cmd = typeAndEnter(t, m, ans)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return m, cmds
+}
+
+func TestLessonQuizStartsNotSubmits(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical, lessonKanji, lessonRadical, lessonKanji}, BatchSize: 3}}
+	fb.plan.Lessons[2].AssignmentID, fb.plan.Lessons[3].AssignmentID = 12, 22
+	m := lessonModel(t, fb)
+	for range m.pages() {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	m, cmds := answerAll(t, m)
+	for _, c := range cmds {
+		m, _ = step(t, m, c())
+	}
+	if m.screen != teaching || m.batchStart != 3 {
+		t.Fatalf("after batch 1: screen %v batchStart %d; want teaching batch 2", m.screen, m.batchStart)
+	}
+	for range m.pages() {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	m, cmds = answerAll(t, m)
+	for _, c := range cmds {
+		m, _ = step(t, m, c())
+	}
+	if m.screen != lessonSummary || m.started != 4 || len(fb.startedIDs) != 4 || len(fb.submitted) != 0 {
+		t.Errorf("screen %v started %d startedIDs %v submitted %v", m.screen, m.started, fb.startedIDs, fb.submitted)
+	}
+}
+
+func TestStart403ExplainsToken(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3},
+		startErr: &wanikani.APIError{Status: 403}}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m)
+	m, _ = step(t, m, cmds[0]())
+	got := stripANSI(m.View().Content)
+	if !strings.Contains(got, "assignments:start") {
+		t.Errorf("403 should explain the missing permission:\n%s", got)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: 't', Text: "t"}); m.screen != onboarding {
+		t.Errorf("t should open token entry, screen %v", m.screen)
+	}
+}
+
+func TestQuitFromTeachingStartsNothing(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonKanji}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if m.screen != loading || cmd == nil || len(fb.startedIDs) != 0 {
+		t.Errorf("q while teaching: screen %v, started %v", m.screen, fb.startedIDs)
+	}
+}
+
+func TestQuitWaitsForLessonStart(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m) // lesson summary, one start in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil || !m.quitting {
+		t.Fatal("esc with a lesson start in flight must wait")
+	}
+	if _, cmd = step(t, m, cmds[0]()); cmd == nil {
+		t.Fatal("expected quit once the start finished")
 	}
 }
