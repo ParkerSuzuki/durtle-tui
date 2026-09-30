@@ -98,6 +98,7 @@ keyring only (breaks on headless machines).
 which is retried on the next launch.
 **Why:** A dropped connection should not silently throw away a review.
 This is not full offline mode; syncing still needs the network.
+**Revised 2026-09-30:** Answers are now written to `pending.json` *before* they are sent and removed once WaniKani accepts (or permanently refuses) them, so a killed app (window closed, SIGTERM) also loses nothing. A second quit key no longer waits for in-flight submits. Side effect accepted: a submit still in flight when the dashboard resends saved answers may be sent twice; WaniKani refuses the duplicate, so nothing is double-counted.
 
 ## 10. Working agreement (2026-09-29)
 
