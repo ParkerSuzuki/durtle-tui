@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	pngpkg "image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -40,7 +44,7 @@ func TestBuildItems(t *testing.T) {
 		{ID: 20, Data: wanikani.Assignment{SubjectID: 2}},  // image-only radical: skipped
 		{ID: 30, Data: wanikani.Assignment{SubjectID: 99}}, // unknown subject: skipped
 	}
-	items, _ := buildItems(assignments, subjects, map[int][]string{1: {"massive"}}, func(wanikani.Resource[wanikani.Subject]) image.Image { return nil })
+	items, _ := buildItems(assignments, subjects, map[int][]string{1: {"massive"}}, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return nil, nil })
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -68,7 +72,7 @@ func fakeAPI(t *testing.T, statuses ...int) (*backend, *int) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	return b, &calls
 }
 
@@ -94,7 +98,7 @@ func TestSubmitPendingAndRejected(t *testing.T) {
 	if pending, err := b.Submit(ctx, sub); !pending || err != nil {
 		t.Errorf("5xx: pending=%v err=%v, want saved for later", pending, err)
 	}
-	if got := readPending(t, b); len(got) != 1 || got[0] != sub {
+	if got := readPending(t, b); len(got) != 1 || got[0].AssignmentID != sub.AssignmentID || got[0].IncorrectMeaning != sub.IncorrectMeaning {
 		t.Errorf("pending.json = %v", got)
 	}
 
@@ -104,8 +108,10 @@ func TestSubmitPendingAndRejected(t *testing.T) {
 	}
 
 	b, _ = fakeAPI(t, http.StatusForbidden)
-	if pending, _ := b.Submit(ctx, sub); !pending {
-		t.Error("403 (token lacks reviews:create): answer must be saved, not lost")
+	pending, err := b.Submit(ctx, sub)
+	var apiErr *wanikani.APIError
+	if !pending || !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Errorf("403: pending=%v err=%v; want saved, and the 403 reported so the UI can explain it", pending, err)
 	}
 
 	b, _ = fakeAPI(t, http.StatusUnprocessableEntity)
@@ -150,7 +156,7 @@ func TestOldSubjectCacheForcesFullSync(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	old := map[string]any{"synced_at": "2026-09-01T00:00:00Z", "subjects": map[string]any{}}
 	if err := store.WriteJSON(filepath.Join(b.dir, "subjects.json"), old); err != nil {
 		t.Fatal(err)
@@ -182,9 +188,14 @@ func TestRadicalImage(t *testing.T) {
 	rad := wanikani.Resource[wanikani.Subject]{ID: 7, Object: "radical", Data: wanikani.Subject{
 		CharacterImages: []wanikani.CharacterImage{{URL: srv.URL + "/png", ContentType: "image/png"}, {URL: srv.URL + "/svg", ContentType: "image/svg+xml"}},
 	}}
-	img := b.radicalImage(context.Background(), rad)
+	img, _ := b.radicalArt(context.Background(), rad)
 	if img == nil {
 		t.Fatal("no image")
+	}
+	if _, png := b.radicalArt(context.Background(), rad); len(png) == 0 {
+		t.Error("no PNG for kitty")
+	} else if cfg, err := pngpkg.DecodeConfig(bytes.NewReader(png)); err != nil || cfg.Width != radicalPNGPx {
+		t.Errorf("kitty PNG is %d px wide (%v), want %d", cfg.Width, err, radicalPNGPx)
 	}
 	if got := img.Bounds().Dx(); got != radicalArtPx {
 		t.Errorf("image is %d px wide, want %d", got, radicalArtPx)
@@ -193,7 +204,7 @@ func TestRadicalImage(t *testing.T) {
 		t.Error("the stroke through the middle is missing")
 	}
 	srv.Close()
-	if b.radicalImage(context.Background(), rad) == nil || hits != 1 {
+	if img, _ := b.radicalArt(context.Background(), rad); img == nil || hits != 1 {
 		t.Errorf("second call should come from the cache (hits = %d)", hits)
 	}
 }
@@ -206,11 +217,11 @@ func TestBuildItemsImageRadicals(t *testing.T) {
 	assignments := []wanikani.Resource[wanikani.Assignment]{{ID: 20, Data: wanikani.Assignment{SubjectID: 2}}}
 	pic := image.NewAlpha(image.Rect(0, 0, 2, 2))
 
-	items, skipped := buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) image.Image { return pic })
+	items, skipped := buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return pic, []byte("png") })
 	if len(items) != 1 || items[0].Image != pic || items[0].Meanings[0] != "Beggar" || skipped != 0 {
 		t.Errorf("with an image: items %+v, skipped %d", items, skipped)
 	}
-	items, skipped = buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) image.Image { return nil })
+	items, skipped = buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return nil, nil })
 	if len(items) != 0 || skipped != 1 {
 		t.Errorf("without an image: %d items, skipped %d; want 0 and 1", len(items), skipped)
 	}
@@ -232,7 +243,7 @@ func TestDashboard(t *testing.T) {
 	})
 	mux.HandleFunc("/assignments", func(w http.ResponseWriter, r *http.Request) {
 		assignmentQueries = append(assignmentQueries, r.URL.RawQuery)
-		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data_updated_at":"2026-01-02T00:00:00Z","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
 	})
 	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
@@ -240,7 +251,7 @@ func TestDashboard(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 
 	d, err := b.Dashboard(context.Background())
 	if err != nil {
@@ -267,7 +278,7 @@ func TestOldAssignmentCacheForcesFullSync(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	old := map[string]any{"version": 0, "synced_at": "2026-09-01T00:00:00Z", "items": map[string]any{}}
 	if err := store.WriteJSON(filepath.Join(b.dir, "assignments.json"), old); err != nil {
 		t.Fatal(err)
@@ -327,7 +338,7 @@ func lessonServer(t *testing.T, startedToday bool) *backend {
 	t.Cleanup(srv.Close)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	return b
 }
 
@@ -387,7 +398,7 @@ func TestStartLesson(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	if err := b.StartLesson(context.Background(), 7); err != nil || path != "PUT /assignments/7/start" {
 		t.Errorf("StartLesson: %q, %v", path, err)
 	}
@@ -412,7 +423,7 @@ func TestAccuracyAcrossSyncs(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 
 	d, err := b.Dashboard(context.Background())
 	if err != nil || d.Today.Total() != 0 {
@@ -422,4 +433,180 @@ func TestAccuracyAcrossSyncs(t *testing.T) {
 	if d, err = b.Dashboard(context.Background()); err != nil || d.Today.Correct != 3 || d.Today.Incorrect != 0 {
 		t.Errorf("today = %+v, %v; want 3 correct", d.Today, err)
 	}
+}
+
+// Incremental sync resumes from WaniKani's own newest timestamp (full
+// precision), minus an overlap so an item updated mid-sync is not skipped.
+// Re-fetching unchanged items must not rewrite the ~15 MB cache.
+func TestSyncCursorAndChangeDetection(t *testing.T) {
+	newest := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		after := r.URL.Query().Get("updated_after")
+		queries = append(queries, after)
+		since, _ := time.Parse(time.RFC3339Nano, after)
+		if after == "" || newest.After(since) { // the server compares at full precision
+			fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":%q,"data":{}}]}`,
+				newest.Format(time.RFC3339Nano))
+			return
+		}
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(b.dir, "subjects.json")
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(path, past, past)
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := newest.Add(-syncOverlap).Format(time.RFC3339Nano); queries[1] != want {
+		t.Errorf("second sync asked updated_after=%q, want %q", queries[1], want)
+	}
+	if info, _ := os.Stat(path); !info.ModTime().Equal(past) {
+		t.Errorf("a sync that changed nothing rewrote the cache")
+	}
+}
+
+// If the token is rejected partway through resending saved answers, the
+// ones already accepted must not stay queued.
+func TestFlushPendingStopsOn401WithoutResending(t *testing.T) {
+	b, _ := fakeAPI(t, http.StatusCreated, http.StatusUnauthorized, http.StatusCreated)
+	list := []review.Submission{{AssignmentID: 1}, {AssignmentID: 2}, {AssignmentID: 3}}
+	if err := store.WriteJSON(filepath.Join(b.dir, "pending.json"), list); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.flushPending(context.Background()); !errors.Is(err, wanikani.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if got := readPending(t, b); len(got) != 2 || got[0].AssignmentID != 2 || got[1].AssignmentID != 3 {
+		t.Errorf("kept %v, want 2 and 3 (1 was already accepted)", got)
+	}
+}
+
+// An answer is on disk before it is sent (so killing the app mid-send loses
+// nothing) and gone from disk once WaniKani has it.
+func TestSubmitWritesAhead(t *testing.T) {
+	var onDisk []review.Submission
+	var b *backend
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		onDisk = readPending(t, b)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+	b = &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+	sub := review.Submission{AssignmentID: 9, IncorrectMeaning: 1}
+	if pending, err := b.Submit(context.Background(), sub); pending || err != nil {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+	if len(onDisk) != 1 || onDisk[0].AssignmentID != sub.AssignmentID || onDisk[0].IncorrectMeaning != sub.IncorrectMeaning || onDisk[0].CompletedAt.IsZero() {
+		t.Errorf("while sending, pending.json = %v; want the answer saved first", onDisk)
+	}
+	if got := readPending(t, b); len(got) != 0 {
+		t.Errorf("after success, pending.json = %v; want empty", got)
+	}
+}
+
+// Settings files: hand edits keep their values and missing fields get
+// defaults; a corrupt file is backed up, not silently lost; an unwritable
+// config dir does not stop the dashboard.
+func TestSettingsFileHandling(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "durtle-tui", "settings.json")
+	b := &backend{dir: t.TempDir()}
+
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte(`{"daily_cap":1}`), 0o600)
+	s, err := b.loadSettings(4)
+	if err != nil || s.DailyCap != 1 || s.BatchSize != 4 || !s.Types.Kanji {
+		t.Errorf("partial file: %+v, %v; want cap 1 kept, batch 4 from WaniKani, types on", s, err)
+	}
+
+	os.WriteFile(path, []byte(`{not json`), 0o600)
+	if s, err = b.loadSettings(4); err != nil || s.DailyCap != 10 {
+		t.Errorf("corrupt file: %+v, %v; want defaults", s, err)
+	}
+	if bad, _ := os.ReadFile(path + ".bad"); string(bad) != "{not json" {
+		t.Errorf("corrupt file not backed up: %q", bad)
+	}
+
+	os.Remove(path)
+	b.wkBatch = 6 // learned from an earlier dashboard load
+	if s, _ = b.Settings(); s.BatchSize != 6 {
+		t.Errorf("settings screen seeded batch %d, want the WaniKani value 6", s.BatchSize)
+	}
+
+	os.Remove(path)
+	os.Chmod(filepath.Dir(path), 0o500) // read-only config dir
+	t.Cleanup(func() { os.Chmod(filepath.Dir(path), 0o700) })
+	if s, err = b.loadSettings(4); err != nil || s.DailyCap != 10 {
+		t.Errorf("unwritable config dir: %+v, %v; want defaults in memory, no error", s, err)
+	}
+}
+
+// Saved answers carry their completion time; only resends send it.
+func TestResendCarriesCompletionTime(t *testing.T) {
+	var createdAt []any
+	status := http.StatusInternalServerError
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Review map[string]any `json:"review"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		createdAt = append(createdAt, body.Review["created_at"])
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+	if pending, _ := b.Submit(context.Background(), review.Submission{AssignmentID: 4}); !pending {
+		t.Fatal("5xx should leave the answer pending")
+	}
+	saved := readPending(t, b)
+	if len(saved) != 1 || saved[0].CompletedAt.IsZero() {
+		t.Fatalf("pending.json = %+v; want the completion time recorded", saved)
+	}
+	status = http.StatusCreated
+	if err := b.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if createdAt[0] != nil || createdAt[1] != saved[0].CompletedAt.Format(time.RFC3339Nano) {
+		t.Errorf("created_at sent = %v; want none on the first send, the saved time on the resend", createdAt)
+	}
+	if got := readPending(t, b); len(got) != 0 {
+		t.Errorf("after the resend, pending.json = %v", got)
+	}
+}
+
+// Logging in (token re-entry) while answers are sending must not race on the
+// client; run with -race.
+func TestLoginDuringSubmitIsRaceFree(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keyring.MockInit()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/reviews" {
+			<-release
+		}
+		fmt.Fprint(w, `{"data":{"level":1}}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "old"))
+	done := make(chan struct{})
+	go func() {
+		b.Submit(context.Background(), review.Submission{AssignmentID: 1})
+		close(done)
+	}()
+	if err := b.Login(context.Background(), "new"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-done
 }

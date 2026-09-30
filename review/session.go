@@ -3,6 +3,7 @@ package review
 import (
 	"math/rand/v2"
 	"slices"
+	"time"
 )
 
 // Submission is what gets sent to WaniKani when an item is finished.
@@ -10,6 +11,10 @@ type Submission struct {
 	AssignmentID     int
 	IncorrectMeaning int
 	IncorrectReading int
+	// CompletedAt is set when the answer is first submitted. Resends carry it
+	// as created_at, so WaniKani refuses a stale resend instead of counting
+	// it as a new review once the item is due again.
+	CompletedAt time.Time
 }
 
 // Result pairs a finished item with its submission, for the summary screen.
@@ -79,7 +84,7 @@ func (s *Session) Answer(input string) (Grade, *Submission) {
 	case Correct, CorrectTypo:
 		s.parts = s.parts[1:]
 		if len(s.parts) == 0 {
-			sub := Submission{it.AssignmentID, s.wrong[Meaning], s.wrong[Reading]}
+			sub := Submission{AssignmentID: it.AssignmentID, IncorrectMeaning: s.wrong[Meaning], IncorrectReading: s.wrong[Reading]}
 			s.results = append(s.results, Result{it, sub})
 			s.pos++
 			s.start()

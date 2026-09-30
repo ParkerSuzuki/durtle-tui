@@ -403,6 +403,9 @@ func TestDashboardShowsPanels(t *testing.T) {
 		m, _ = step(t, m, dashboardMsg{d: sampleDash})
 		got := stripANSI(m.View().Content)
 		for _, want := range []string{"Level 12", "Lessons", "Reviews", "67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
+			if want == "30 needed" && width < 61 {
+				continue // narrow terminals drop the level-up suffix so nothing wraps
+			}
 			if !strings.Contains(got, want) {
 				t.Errorf("width %d: dashboard missing %q", width, want)
 			}
@@ -462,7 +465,7 @@ func TestSummaryReturnsToDashboard(t *testing.T) {
 
 // No dashboard line may be wider than the terminal once there is room for it.
 func TestDashboardFitsWidth(t *testing.T) {
-	for _, width := range []int{80, 100, 140} {
+	for _, width := range []int{60, 70, 80, 100, 140} {
 		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
 		m, _ = step(t, m, dashboardMsg{d: sampleDash})
 		for _, line := range strings.Split(m.View().Content, "\n") {
@@ -869,5 +872,176 @@ func TestAccuracyPanel(t *testing.T) {
 	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Level: 1}})
 	if got := stripANSI(m.View().Content); !strings.Contains(got, "no reviews yet today") {
 		t.Errorf("empty accuracy not explained:\n%s", got)
+	}
+}
+
+// A second quit key stops waiting: answers still sending are already saved
+// in pending.json and go out on the next launch.
+func TestSecondQuitStopsWaiting(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil || !m.quitting {
+		t.Fatal("first esc should wait")
+	}
+	if _, cmd = step(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil {
+		t.Fatal("second quit key should quit now")
+	} else if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("want tea.Quit")
+	}
+	// Same from the dashboard, where keys are otherwise ignored while quitting.
+	fb.dash = dashboard.Dashboard{}
+	m, _ = step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground")
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = step(t, m, cmd())
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if _, cmd = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd == nil {
+		t.Error("second q on the dashboard should quit now")
+	}
+}
+
+// A review refused with 403 (token lacks reviews:create) is kept for later
+// and explained, with t to enter a better token.
+func TestReview403ExplainsToken(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // summary
+	m, _ = step(t, m, submittedMsg{pending: true, err: &wanikani.APIError{Status: 403}, run: m.run})
+	got := stripANSI(m.View().Content)
+	if m.rejected != 0 || m.pending != 1 || !strings.Contains(got, "reviews:create") {
+		t.Errorf("rejected %d pending %d; summary:\n%s", m.rejected, m.pending, got)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: 't', Text: "t"}); m.screen != onboarding {
+		t.Errorf("t should open token entry, screen %v", m.screen)
+	}
+}
+
+func TestLessonStart401GoesToTokenEntry(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}, startErr: wanikani.ErrUnauthorized}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m)
+	if m, _ = step(t, m, cmds[0]()); m.screen != onboarding || m.inFlight != 0 {
+		t.Errorf("after a 401 on start: screen %v inFlight %d; want token entry", m.screen, m.inFlight)
+	}
+}
+
+func TestLessonSummaryWaitsForStarts(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m) // lesson summary, one start in flight
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || next.screen != lessonSummary {
+		t.Errorf("Enter while starting: screen %v; want to wait", next.screen)
+	}
+	m, _ = step(t, m, cmds[0]())
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != loading {
+		t.Errorf("Enter after starts landed: screen %v; want the dashboard loading", m.screen)
+	}
+}
+
+// A result from an earlier session must not count toward the current one.
+func TestLateResultIgnoredByNextSession(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, submitErr: errors.New("disk full")}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, late := typeAndEnter(t, m, "ground")
+	m, _ = step(t, m, loadedMsg{items: fb.items}) // next session starts
+	if m, _ = step(t, m, late()); m.lost != 0 || m.inFlight != 0 {
+		t.Errorf("late result: lost %d inFlight %d; want 0 and 0", m.lost, m.inFlight)
+	}
+}
+
+// Only Enter starts the quiz: → on the last page is a stray key, not a choice.
+func TestRightOnLastPageDoesNotStartQuiz(t *testing.T) {
+	m := lessonModel(t, &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}})
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight}); m.screen != teaching {
+		t.Fatalf("→ on the last page: screen %v, want to stay teaching", m.screen)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != reviewing {
+		t.Errorf("Enter on the last page: screen %v, want the quiz", m.screen)
+	}
+}
+
+// Space toggles, it does not count; refusing to turn off the last type says why.
+func TestSettingsSpaceAndRefusal(t *testing.T) {
+	fb := &fakeBackend{settings: lessons.Settings{DailyCap: 5, Order: lessons.Classic, Types: lessons.Types{Kanji: true}, BatchSize: 3}}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m, _ = step(t, m, cmd())
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeySpace}); m.settings.DailyCap != 5 {
+		t.Errorf("space on the cap row changed it to %d", m.settings.DailyCap)
+	}
+	for range 3 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyDown}) // kanji row
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeySpace})
+	if got := stripANSI(m.View().Content); !m.settings.Types.Kanji || !strings.Contains(got, "At least one type") {
+		t.Errorf("turning off the last type should be refused with a reason:\n%s", got)
+	}
+}
+
+// In kitty, an image-only radical is uploaded once and drawn with Unicode
+// placeholders inside the block; elsewhere it stays half-block art.
+func TestKittyRadicalImage(t *testing.T) {
+	img := image.NewAlpha(image.Rect(0, 0, 20, 20))
+	beggar := review.Item{AssignmentID: 9, Type: "radical", Meanings: []string{"Beggar"}, Image: img, PNG: []byte("png-bytes")}
+
+	m, _ := step(t, New(&fakeBackend{}, true), tea.WindowSizeMsg{Width: 80, Height: 40})
+	m, cmd := step(t, m, loadedMsg{items: []review.Item{beggar}})
+	if !sendsRaw(cmd, "\x1b_Ga=T,U=1,f=100,i=") {
+		t.Error("the radical's PNG was not uploaded to kitty")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "\U0010EEEE") {
+		t.Error("kitty view should draw the radical with image placeholders")
+	}
+	if !strings.Contains(view, "\x1b[38;5;1m\U0010EEEE") {
+		t.Error("the image id (foreground color 1) must survive the block's styling")
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("line is %d cells wide on an 80-column screen", w)
+		}
+	}
+
+	plain, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 80, Height: 40})
+	plain, cmd = step(t, plain, loadedMsg{items: []review.Item{beggar}})
+	if sendsRaw(cmd, "\x1b_G") || strings.Contains(plain.View().Content, "\U0010EEEE") {
+		t.Error("outside kitty: no upload, no placeholders")
+	}
+}
+
+// sendsRaw runs cmd (and batches) briefly and reports whether any raw
+// terminal output starts with prefix.
+func sendsRaw(cmd tea.Cmd, prefix string) bool {
+	if cmd == nil {
+		return false
+	}
+	found := make(chan bool, 64)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		go func() {
+			switch msg := c().(type) {
+			case tea.RawMsg:
+				if s, ok := msg.Msg.(string); ok && strings.HasPrefix(s, prefix) {
+					found <- true
+				}
+			case tea.BatchMsg:
+				for _, sub := range msg {
+					if sub != nil {
+						run(sub)
+					}
+				}
+			}
+		}()
+	}
+	run(cmd)
+	select {
+	case <-found:
+		return true
+	case <-time.After(200 * time.Millisecond):
+		return false
 	}
 }

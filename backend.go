@@ -3,17 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
@@ -25,10 +29,12 @@ import (
 
 // backend implements ui.Backend on top of the WaniKani API and local files.
 type backend struct {
-	dir    string // cache directory
-	base   string // API base URL
-	client *wanikani.Client
-	mu     sync.Mutex // guards pending.json; submits run concurrently
+	dir    string                          // cache directory
+	base   string                          // API base URL
+	client atomic.Pointer[wanikani.Client] // swapped by Login while commands run
+	mu     sync.Mutex                      // guards pending.json and wkBatch; commands run concurrently
+
+	wkBatch int // the user's WaniKani lesson batch size, once a sync has seen it
 }
 
 // Cache versions change whenever the cached type gains fields, so an older
@@ -44,12 +50,19 @@ const (
 // 10 rows of half-block characters.
 const radicalArtPx = 20
 
+// radicalPNGPx is the size of the sharper PNG that kitty draws over the same
+// 20x10 cell area (decision 30).
+const radicalPNGPx = 160
+
 // resourceCache is the on-disk form of a synced collection.
 type resourceCache[T any] struct {
-	Version  int                          `json:"version"`
-	SyncedAt time.Time                    `json:"synced_at"`
-	Items    map[int]wanikani.Resource[T] `json:"items"`
+	Version int                          `json:"version"`
+	Items   map[int]wanikani.Resource[T] `json:"items"`
 }
+
+// syncOverlap re-asks for this much before the newest cached timestamp, so an
+// item updated while an earlier sync was paging through is not skipped.
+const syncOverlap = 5 * time.Minute
 
 type synonymCache struct {
 	SyncedAt time.Time        `json:"synced_at"`
@@ -67,7 +80,7 @@ func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
 	}
 	_, err := syncResources(filepath.Join(b.dir, "review_statistics.json"), statsCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.ReviewStatistic], error) {
-			return b.client.ReviewStatistics(ctx, since)
+			return b.api().ReviewStatistics(ctx, since)
 		},
 		func(old map[int]wanikani.Resource[wanikani.ReviewStatistic], fresh []wanikani.Resource[wanikani.ReviewStatistic]) {
 			dashboard.AddDeltas(days, old, fresh, time.Local)
@@ -79,9 +92,24 @@ func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
 	return days, store.WriteJSON(daysPath, days)
 }
 
+// newest is the latest DataUpdatedAt among rs, or since when none is later.
+// The next incremental sync asks for changes after it: WaniKani's own clock,
+// so a skewed local clock cannot skip updates.
+func newest[T any](since time.Time, rs []wanikani.Resource[T]) time.Time {
+	for _, r := range rs {
+		if r.DataUpdatedAt.After(since) {
+			since = r.DataUpdatedAt
+		}
+	}
+	return since
+}
+
+// api is the current WaniKani client.
+func (b *backend) api() *wanikani.Client { return b.client.Load() }
+
 // connect makes sure there is a client, loading the saved token if needed.
 func (b *backend) connect() error {
-	if b.client != nil {
+	if b.client.Load() != nil {
 		return nil
 	}
 	tok, err := store.LoadToken()
@@ -91,7 +119,7 @@ func (b *backend) connect() error {
 	if err != nil {
 		return err
 	}
-	b.client = wanikani.NewClient(b.base, tok)
+	b.client.Store(wanikani.NewClient(b.base, tok))
 	return nil
 }
 
@@ -113,11 +141,11 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	if err != nil {
 		return none, err
 	}
-	user, err := b.client.User(ctx)
+	user, err := b.api().User(ctx)
 	if err != nil {
 		return none, err
 	}
-	sum, err := b.client.Summary(ctx)
+	sum, err := b.api().Summary(ctx)
 	if err != nil {
 		return none, err
 	}
@@ -148,7 +176,7 @@ func (b *backend) Login(ctx context.Context, token string) error {
 	if err := store.SaveToken(token); err != nil {
 		return fmt.Errorf("saving token: %w", err)
 	}
-	b.client = c
+	b.client.Store(c)
 	return nil
 }
 
@@ -170,18 +198,20 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	assignments, err := b.client.ReviewAssignments(ctx)
+	assignments, err := b.api().ReviewAssignments(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
-	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, skipped := buildItems(assignments, subjects, synonyms, art)
 	return items, skipped, nil
 }
 
 // syncResources loads a cached collection from path, fetches what changed
-// since the last sync (everything if the cache is missing, corrupt, or from
-// another version), merges by ID, and saves it back.
+// since the cache's newest server timestamp (everything if the cache is
+// missing, corrupt, or from another version), merges by ID, and saves it
+// back when anything actually changed. The cursor comes from WaniKani's own
+// data_updated_at values, so the local clock never matters.
 //
 // before, when not nil, sees the cached items and the fetched changes before
 // they are merged: the only moment both old and new values are available.
@@ -192,8 +222,16 @@ func syncResources[T any](path string, version int,
 	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != version {
 		cache = resourceCache[T]{Version: version}
 	}
-	started := time.Now()
-	fresh, err := fetch(cache.SyncedAt)
+	var since time.Time
+	for _, r := range cache.Items {
+		if r.DataUpdatedAt.After(since) {
+			since = r.DataUpdatedAt
+		}
+	}
+	if !since.IsZero() {
+		since = since.Add(-syncOverlap)
+	}
+	fresh, err := fetch(since)
 	if err != nil {
 		return nil, err
 	}
@@ -203,24 +241,34 @@ func syncResources[T any](path string, version int,
 	if cache.Items == nil {
 		cache.Items = map[int]wanikani.Resource[T]{}
 	}
+	changed := false
 	for _, r := range fresh {
+		if old, ok := cache.Items[r.ID]; !ok || !old.DataUpdatedAt.Equal(r.DataUpdatedAt) {
+			changed = true
+		}
 		cache.Items[r.ID] = r
 	}
-	cache.SyncedAt = started
+	if !changed {
+		// The overlap re-fetches recent items; only rewrite when something is
+		// new (subjects.json is ~15 MB).
+		// ponytail: the file is still read on every refresh (~0.25 s for
+		// subjects); keep the maps in memory if refreshes ever feel slow.
+		return cache.Items, nil
+	}
 	return cache.Items, store.WriteJSON(path, cache)
 }
 
 func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[wanikani.Subject], error) {
 	return syncResources(filepath.Join(b.dir, "subjects.json"), subjectCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Subject], error) {
-			return b.client.Subjects(ctx, since)
+			return b.api().Subjects(ctx, since)
 		}, nil)
 }
 
 func (b *backend) syncAssignments(ctx context.Context) (map[int]wanikani.Resource[wanikani.Assignment], error) {
 	return syncResources(filepath.Join(b.dir, "assignments.json"), assignmentCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Assignment], error) {
-			return b.client.Assignments(ctx, since)
+			return b.api().Assignments(ctx, since)
 		}, nil)
 }
 
@@ -230,8 +278,7 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	if err := store.ReadJSON(path, &cache); err != nil {
 		cache = synonymCache{}
 	}
-	started := time.Now()
-	fresh, err := b.client.StudyMaterials(ctx, cache.SyncedAt)
+	fresh, err := b.api().StudyMaterials(ctx, cache.SyncedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -241,31 +288,54 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	for _, m := range fresh {
 		cache.Synonyms[m.Data.SubjectID] = m.Data.MeaningSynonyms
 	}
-	cache.SyncedAt = started
+	cache.SyncedAt = newest(cache.SyncedAt, fresh)
 	return cache.Synonyms, store.WriteJSON(path, cache)
 }
 
-// Submit sends one finished review. If it cannot be sent right now, it is
-// saved to pending.json and pending is true. err is non-nil only when
-// WaniKani refused the review or it could not be saved.
+// Submit sends one finished review. The answer is written to pending.json
+// first and removed once WaniKani has it (or refused it for good), so killing
+// the app mid-send loses nothing: it goes out on the next launch. pending is
+// true when it could not be sent now. err is non-nil when WaniKani refused
+// the review or the pending file could not be written.
 func (b *backend) Submit(ctx context.Context, s review.Submission) (pending bool, err error) {
-	err = b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
-	if err == nil {
-		return false, nil
+	if s.CompletedAt.IsZero() {
+		s.CompletedAt = time.Now().UTC()
 	}
-	if rejected(err) {
+	if err := b.editPending(func(list []review.Submission) []review.Submission { return append(list, s) }); err != nil {
 		return false, err
 	}
+	// The first send lets the server stamp the time: a local clock running
+	// ahead would make WaniKani refuse a created_at in its future.
+	err = b.api().SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading, time.Time{})
+	if err != nil && !rejected(err) {
+		var apiErr *wanikani.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == 403 {
+			return true, err // saved, and the UI explains the missing permission
+		}
+		return true, nil // stays in pending.json
+	}
+	if rerr := b.editPending(func(list []review.Submission) []review.Submission {
+		if i := slices.IndexFunc(list, func(p review.Submission) bool {
+			return p.AssignmentID == s.AssignmentID && p.CompletedAt.Equal(s.CompletedAt)
+		}); i >= 0 {
+			return slices.Delete(list, i, i+1)
+		}
+		return list
+	}); rerr != nil {
+		return false, rerr
+	}
+	return false, err
+}
+
+// editPending rewrites pending.json under the lock; submits run concurrently.
+func (b *backend) editPending(change func([]review.Submission) []review.Submission) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var list []review.Submission
 	if err := store.ReadJSON(b.pendingPath(), &list); err != nil {
-		return false, err
+		return err
 	}
-	if err := store.WriteJSON(b.pendingPath(), append(list, s)); err != nil {
-		return false, err
-	}
-	return true, nil
+	return store.WriteJSON(b.pendingPath(), change(list))
 }
 
 // flushPending retries saved answers, keeping only those that still fail
@@ -281,10 +351,15 @@ func (b *backend) flushPending(ctx context.Context) error {
 		return nil
 	}
 	var keep []review.Submission
-	for _, s := range list {
-		err := b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
+	for i, s := range list {
+		err := b.api().SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading, s.CompletedAt)
 		if errors.Is(err, wanikani.ErrUnauthorized) {
-			return err // leave the file as is; retry after a new token
+			// Keep this answer and the untried ones for after a new token;
+			// drop the ones already accepted so they are not sent twice.
+			if werr := store.WriteJSON(b.pendingPath(), append(keep, list[i:]...)); werr != nil {
+				return werr
+			}
+			return err
 		}
 		if err != nil && !rejected(err) {
 			keep = append(keep, s)
@@ -310,7 +385,7 @@ func rejected(err error) bool {
 // art returns nil they are skipped and counted.
 func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 	subjects map[int]wanikani.Resource[wanikani.Subject], synonyms map[int][]string,
-	art func(wanikani.Resource[wanikani.Subject]) image.Image) (items []review.Item, skipped int) {
+	art func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte)) (items []review.Item, skipped int) {
 	for _, a := range assignments {
 		s, ok := subjects[a.Data.SubjectID]
 		if !ok {
@@ -319,7 +394,7 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 		it := review.Item{AssignmentID: a.ID, Type: s.Object}
 		if s.Data.Characters != nil {
 			it.Characters = *s.Data.Characters
-		} else if it.Image = art(s); it.Image == nil {
+		} else if it.Image, it.PNG = art(s); it.Image == nil {
 			skipped++
 			continue
 		}
@@ -356,11 +431,12 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 	return items, skipped
 }
 
-// radicalImage returns the picture for a radical with no Unicode character:
-// its SVG, downloaded once into the cache, rasterized by rsvg-convert (see
-// decision 20). It returns nil when that is not possible, for example when
-// rsvg-convert is not installed or the download fails.
-func (b *backend) radicalImage(ctx context.Context, s wanikani.Resource[wanikani.Subject]) image.Image {
+// radicalArt returns the pictures for a radical with no Unicode character:
+// a small image for half-block art everywhere, and a sharper PNG for kitty.
+// Both come from its SVG, downloaded once into the cache and rasterized by
+// rsvg-convert (decisions 20 and 30). The image is nil when that is not
+// possible, for example when rsvg-convert is not installed.
+func (b *backend) radicalArt(ctx context.Context, s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) {
 	var url string
 	for _, ci := range s.Data.CharacterImages {
 		if ci.ContentType == "image/svg+xml" {
@@ -368,24 +444,31 @@ func (b *backend) radicalImage(ctx context.Context, s wanikani.Resource[wanikani
 		}
 	}
 	if url == "" {
-		return nil
+		return nil, nil
 	}
 	path := filepath.Join(b.dir, "radicals", fmt.Sprintf("%d.svg", s.ID))
 	if _, err := os.Stat(path); err != nil {
 		if err := download(ctx, url, path); err != nil {
-			return nil
+			return nil, nil
 		}
 	}
-	size := fmt.Sprint(radicalArtPx)
-	out, err := exec.CommandContext(ctx, "rsvg-convert", "-w", size, "-h", size, path).Output()
-	if err != nil {
-		return nil
+	rasterize := func(px int) []byte {
+		size := fmt.Sprint(px)
+		out, err := exec.CommandContext(ctx, "rsvg-convert", "-w", size, "-h", size, path).Output()
+		if err != nil {
+			return nil
+		}
+		return out
 	}
-	img, err := png.Decode(bytes.NewReader(out))
-	if err != nil {
-		return nil
+	small := rasterize(radicalArtPx)
+	if small == nil {
+		return nil, nil
 	}
-	return img
+	img, err := png.Decode(bytes.NewReader(small))
+	if err != nil {
+		return nil, nil
+	}
+	return img, rasterize(radicalPNGPx)
 }
 
 // download saves url to path. It sends no API token: images live on a
@@ -427,17 +510,34 @@ func readingKind(t string) string {
 	return t // "nanori" or ""
 }
 
-// loadSettings reads settings.json, clamped. A missing or corrupt file is
-// replaced by defaults seeded with the user's WaniKani batch size.
+// loadSettings reads settings.json over the defaults, so a hand-edited file
+// keeps its values and missing fields get defaults (batch size seeded from
+// WaniKani). A corrupt file is kept as settings.json.bad and replaced. If the
+// defaults cannot be written (read-only config dir), they are used anyway.
 func (b *backend) loadSettings(waniKaniBatch int) (lessons.Settings, error) {
+	b.mu.Lock()
+	if waniKaniBatch > 0 {
+		b.wkBatch = waniKaniBatch
+	}
+	batch := b.wkBatch
+	b.mu.Unlock()
+	s := lessons.Default(batch)
 	path, err := store.ConfigFile("settings.json")
 	if err != nil {
-		return lessons.Settings{}, err
+		return s, nil
 	}
-	var s lessons.Settings
-	if err := store.ReadJSON(path, &s); err != nil || s == (lessons.Settings{}) {
-		s = lessons.Default(waniKaniBatch)
-		return s, store.WriteJSON(path, s)
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		_ = store.WriteJSON(path, s) // best effort: defaults work without the file
+		return s, nil
+	case err != nil:
+		return s, nil
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		_ = os.WriteFile(path+".bad", raw, 0o600) // keep the user's edits to fix by hand
+		s = lessons.Default(batch)
+		_ = store.WriteJSON(path, s)
 	}
 	return s.Clamp(), nil
 }
@@ -486,7 +586,11 @@ func lessonCandidates(now time.Time, sum wanikani.Summary,
 // must not take daily-cap slots they can never use.
 func (b *backend) drawable(ctx context.Context) func(wanikani.Resource[wanikani.Subject]) bool {
 	return func(s wanikani.Resource[wanikani.Subject]) bool {
-		return s.Data.Characters != nil || b.radicalImage(ctx, s) != nil
+		if s.Data.Characters != nil {
+			return true
+		}
+		img, _ := b.radicalArt(ctx, s)
+		return img != nil
 	}
 }
 
@@ -520,11 +624,11 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 	if err != nil {
 		return none, err
 	}
-	user, err := b.client.User(ctx)
+	user, err := b.api().User(ctx)
 	if err != nil {
 		return none, err
 	}
-	sum, err := b.client.Summary(ctx)
+	sum, err := b.api().Summary(ctx)
 	if err != nil {
 		return none, err
 	}
@@ -538,7 +642,7 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 	for _, c := range picked {
 		due = append(due, assignments[c.AssignmentID])
 	}
-	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, _ := buildItems(due, subjects, synonyms, art)
 	return lessons.Plan{Lessons: buildLessons(items, assignments, subjects), BatchSize: settings.BatchSize}, nil
 }
@@ -585,5 +689,5 @@ func (b *backend) StartLesson(ctx context.Context, assignmentID int) error {
 	if err := b.connect(); err != nil {
 		return err
 	}
-	return b.client.StartAssignment(ctx, assignmentID)
+	return b.api().StartAssignment(ctx, assignmentID)
 }

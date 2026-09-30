@@ -5,7 +5,7 @@ import (
 	"unicode/utf8"
 )
 
-// romaji maps syllables to hiragana. Keys are at most 3 bytes; ToHiragana
+// romaji maps syllables to hiragana. Keys are at most 4 bytes; ToHiragana
 // tries the longest match first.
 var romaji = map[string]string{
 	"a": "あ", "i": "い", "u": "う", "e": "え", "o": "お",
@@ -40,7 +40,10 @@ var romaji = map[string]string{
 	"rya": "りゃ", "ryu": "りゅ", "ryo": "りょ",
 	"fa": "ふぁ", "fi": "ふぃ", "fe": "ふぇ", "fo": "ふぉ",
 	"xa": "ぁ", "xi": "ぃ", "xu": "ぅ", "xe": "ぇ", "xo": "ぉ",
-	"xya": "ゃ", "xyu": "ゅ", "xyo": "ょ", "xtu": "っ", "ltu": "っ",
+	"xya": "ゃ", "xyu": "ゅ", "xyo": "ょ", "xtu": "っ", "ltu": "っ", "xtsu": "っ",
+	"va": "ゔぁ", "vi": "ゔぃ", "vu": "ゔ", "ve": "ゔぇ", "vo": "ゔぉ",
+	"dya": "ぢゃ", "dyu": "ぢゅ", "dyo": "ぢょ",
+	"wi": "うぃ", "we": "うぇ",
 	"-": "ー",
 }
 
@@ -84,6 +87,13 @@ func ToHiragana(s string, final bool) string {
 			}
 		}
 
+		// Hepburn spells ん as m before b, p, and m: shimbun, sampo.
+		if c == 'm' && len(rest) > 1 && strings.IndexByte("bpm", rest[1]) >= 0 {
+			b.WriteString("ん")
+			i++
+			continue
+		}
+
 		// A doubled consonant (kk, ss, tt...) or "tch" becomes a small っ.
 		if len(rest) > 1 && c >= 'a' && c <= 'z' && !isVowel(c) &&
 			(rest[1] == c || strings.HasPrefix(rest, "tch")) {
@@ -93,7 +103,7 @@ func ToHiragana(s string, final bool) string {
 		}
 
 		matched := false
-		for n := min(3, len(rest)); n >= 1; n-- {
+		for n := min(4, len(rest)); n >= 1; n-- {
 			if kana, ok := romaji[rest[:n]]; ok {
 				b.WriteString(kana)
 				i += n

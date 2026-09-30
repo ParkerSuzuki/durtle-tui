@@ -694,3 +694,28 @@ comparison.
 
 **`switch p := a.Percent(); { ... }`** binds a variable for the whole switch,
 like `if x := f(); x > 0`, keeping `p` scoped to where it is used.
+
+## 16. Runes beyond the keyboard, atomic pointers, and keyed literals
+
+Code: [ui/kittyimage.go](../ui/kittyimage.go), [backend.go](../backend.go) (`client`, `api`)
+
+**Runes from the private planes.** `'\U0010EEEE'` is a code point in Unicode's
+private use area that kitty reserves for image placeholders. `WriteRune`
+encodes it (4 UTF-8 bytes) and the combining diacritics after it; Go strings
+hold any code point, displayable or not.
+
+**`atomic.Pointer[T]`** (Go 1.19) swaps a pointer safely between goroutines
+without a mutex: `Store` publishes a new client when you log in, and `Load`
+reads whichever one is current. It fits "one writer, many readers" state,
+and it is generic, so there is no `unsafe` or type assertion.
+
+**Why keyed struct literals matter.** Adding `CompletedAt` to
+`review.Submission` broke `Submission{it.AssignmentID, a, b}`: positional
+literals must list every field. The keyed form
+`Submission{AssignmentID: ..., IncorrectMeaning: ...}` keeps compiling as a
+struct grows, which is why `go vet` insists on it across packages.
+
+**Comparing times: `Equal`, not `==`.** A `time.Time` read back from JSON
+has lost its monotonic clock reading and may carry a different location
+pointer, so `==` can say two identical instants differ. `t.Equal(u)`
+compares the instant itself; the pending-answer removal uses it.

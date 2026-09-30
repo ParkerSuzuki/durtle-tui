@@ -69,7 +69,7 @@ func (m Model) View() tea.View {
 		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
 	if m.quitting {
-		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting...", m.inFlight))
+		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting... (again to quit now; they are saved)", m.inFlight))
 	}
 	v := tea.NewView(page.Render(body))
 	v.AltScreen = true
@@ -134,7 +134,12 @@ func (m Model) itemBlock(item review.Item) string {
 	switch {
 	case item.Image != nil:
 		// The picture fills the block: 10 rows, no top or bottom padding.
-		shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
+		// Kitty draws the sharp PNG over placeholder cells; elsewhere half-blocks.
+		shown = strings.Join(halfBlocks(item.Image), "\n")
+		if id, ok := m.imageIDs[item.AssignmentID]; ok {
+			shown = Placeholders(id, radicalCols, radicalRows)
+		}
+		style = style.Padding(0, 4)
 	case m.fitScale(shown, w) > 0:
 		shown = " " // leave the row empty; bigCharsSeq draws on top
 	}
@@ -308,7 +313,11 @@ func (m Model) summaryView() string {
 	if m.inFlight > 0 {
 		lines = append(lines, fmt.Sprintf("Sending %d...", m.inFlight))
 	}
-	if m.pending > 0 {
+	if m.submitForbidden {
+		lines = append(lines, "", "Your API token lacks the reviews:create permission, so answers were saved, not sent.",
+			"Make a token with it at https://www.wanikani.com/settings/personal_access_tokens,",
+			"then press t to enter it. The saved answers are sent after that.")
+	} else if m.pending > 0 {
 		lines = append(lines, fmt.Sprintf("%d saved offline; they will be sent next launch.", m.pending))
 	}
 	if m.rejected > 0 {
@@ -361,16 +370,23 @@ const (
 
 func (m Model) homeView() string {
 	d, p := m.dash, m.dash.Progress
-	// The kanji line is the widest: an 18-cell label, the bar, and up to 37
-	// cells of counts ("  123 / 456   (411 needed to level up)").
-	barW := max(m.innerWidth()-(18+1+37), 5)
+	// The kanji line is the widest: an 18-cell label, the bar, the counts
+	// ("  123 / 456"), and "   (411 needed to level up)" when there is room.
+	// On narrow terminals the suffix goes, so nothing wraps.
+	const labelW, countsW, neededW = 18 + 1, 11, 26
+	needed := fmt.Sprintf("   (%d needed to level up)", p.KanjiNeeded)
+	barW := m.innerWidth() - (labelW + countsW + neededW)
+	if barW < 5 {
+		needed, barW = "", m.innerWidth()-(labelW+countsW)
+	}
+	barW = max(barW, 5)
 	lines := []string{
 		title.Render("durtle-tui") + dim.Render(fmt.Sprintf("   Level %d", d.Level)),
 		"",
 		m.tilesView(),
 		"",
-		fmt.Sprintf("%-18s %s  %d / %d   (%d needed to level up)", fmt.Sprintf("Level %d kanji", d.Level),
-			progressBar(p.KanjiPassed, p.Kanji, barW, typeColors["kanji"]), p.KanjiPassed, p.Kanji, p.KanjiNeeded),
+		fmt.Sprintf("%-18s %s  %d / %d%s", fmt.Sprintf("Level %d kanji", d.Level),
+			progressBar(p.KanjiPassed, p.Kanji, barW, typeColors["kanji"]), p.KanjiPassed, p.Kanji, needed),
 		fmt.Sprintf("%-18s %s  %d / %d", fmt.Sprintf("Level %d radicals", d.Level),
 			progressBar(p.RadicalsPassed, p.Radicals, barW, typeColors["radical"]), p.RadicalsPassed, p.Radicals),
 		"",
@@ -683,6 +699,9 @@ func (m Model) settingsView() string {
 		}
 		lines = append(lines, fmt.Sprintf("%s%-18s %s", cursor, r[0], r[1]))
 	}
+	if m.settingsNote != "" {
+		lines = append(lines, "", m.settingsNote)
+	}
 	lines = append(lines, "", dim.Render("↑↓ choose   ←→ change   space toggle   esc save"))
 	return strings.Join(lines, "\n")
 }
@@ -714,8 +733,8 @@ func accuracyLines(today, yesterday dashboard.Answers, width int) []string {
 	}
 	label := map[dashboard.Zone]string{
 		dashboard.InZone:    "in the Learning Zone (85-95%)",
-		dashboard.BelowZone: "below the Learning Zone: go easier on lessons",
-		dashboard.AboveZone: "above the Learning Zone: room for more lessons",
+		dashboard.BelowZone: "below the zone: go easier on lessons",
+		dashboard.AboveZone: "above the zone: room for more lessons",
 	}[zone]
 	return []string{
 		head,
