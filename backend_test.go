@@ -104,8 +104,10 @@ func TestSubmitPendingAndRejected(t *testing.T) {
 	}
 
 	b, _ = fakeAPI(t, http.StatusForbidden)
-	if pending, _ := b.Submit(ctx, sub); !pending {
-		t.Error("403 (token lacks reviews:create): answer must be saved, not lost")
+	pending, err := b.Submit(ctx, sub)
+	var apiErr *wanikani.APIError
+	if !pending || !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Errorf("403: pending=%v err=%v; want saved, and the 403 reported so the UI can explain it", pending, err)
 	}
 
 	b, _ = fakeAPI(t, http.StatusUnprocessableEntity)

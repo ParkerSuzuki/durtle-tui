@@ -898,3 +898,54 @@ func TestSecondQuitStopsWaiting(t *testing.T) {
 		t.Error("second q on the dashboard should quit now")
 	}
 }
+
+// A review refused with 403 (token lacks reviews:create) is kept for later
+// and explained, with t to enter a better token.
+func TestReview403ExplainsToken(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // summary
+	m, _ = step(t, m, submittedMsg{pending: true, err: &wanikani.APIError{Status: 403}, run: m.run})
+	got := stripANSI(m.View().Content)
+	if m.rejected != 0 || m.pending != 1 || !strings.Contains(got, "reviews:create") {
+		t.Errorf("rejected %d pending %d; summary:\n%s", m.rejected, m.pending, got)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: 't', Text: "t"}); m.screen != onboarding {
+		t.Errorf("t should open token entry, screen %v", m.screen)
+	}
+}
+
+func TestLessonStart401GoesToTokenEntry(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}, startErr: wanikani.ErrUnauthorized}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m)
+	if m, _ = step(t, m, cmds[0]()); m.screen != onboarding || m.inFlight != 0 {
+		t.Errorf("after a 401 on start: screen %v inFlight %d; want token entry", m.screen, m.inFlight)
+	}
+}
+
+func TestLessonSummaryWaitsForStarts(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmds := answerAll(t, m) // lesson summary, one start in flight
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || next.screen != lessonSummary {
+		t.Errorf("Enter while starting: screen %v; want to wait", next.screen)
+	}
+	m, _ = step(t, m, cmds[0]())
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != loading {
+		t.Errorf("Enter after starts landed: screen %v; want the dashboard loading", m.screen)
+	}
+}
+
+// A result from an earlier session must not count toward the current one.
+func TestLateResultIgnoredByNextSession(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, submitErr: errors.New("disk full")}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, late := typeAndEnter(t, m, "ground")
+	m, _ = step(t, m, loadedMsg{items: fb.items}) // next session starts
+	if m, _ = step(t, m, late()); m.lost != 0 || m.inFlight != 0 {
+		t.Errorf("late result: lost %d inFlight %d; want 0 and 0", m.lost, m.inFlight)
+	}
+}

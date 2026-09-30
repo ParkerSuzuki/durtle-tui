@@ -267,6 +267,10 @@ func (b *backend) Submit(ctx context.Context, s review.Submission) (pending bool
 	}
 	err = b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
 	if err != nil && !rejected(err) {
+		var apiErr *wanikani.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == 403 {
+			return true, err // saved, and the UI explains the missing permission
+		}
 		return true, nil // stays in pending.json
 	}
 	if rerr := b.editPending(func(list []review.Submission) []review.Submission {

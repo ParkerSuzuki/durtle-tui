@@ -62,7 +62,10 @@ type (
 		plan lessons.Plan
 		err  error
 	}
-	startedMsg  struct{ err error }
+	startedMsg struct {
+		err error
+		run int
+	}
 	settingsMsg struct {
 		s   lessons.Settings
 		err error
@@ -71,6 +74,7 @@ type (
 	submittedMsg struct {
 		pending bool
 		err     error
+		run     int // the session it belongs to; later sessions ignore it
 	}
 )
 
@@ -97,18 +101,20 @@ type Model struct {
 	loadingReviews bool      // which load a retry repeats: reviews or the dashboard
 	refreshAt      time.Time // when the dashboard reloads itself; stale timers are ignored
 
-	plan           lessons.Plan
-	batchStart     int  // index of the first lesson in the current batch
-	page           int  // teaching page within the batch
-	lessonMode     bool // the reviewing screen is a lesson quiz
-	loadingLessons bool
-	started        int // lessons started on WaniKani this session
-	startFailed    int
-	startErr       error
-	settings       lessons.Settings // being edited on the settings screen
-	settingRow     int
-	height         int // terminal rows, 0 before the first resize
-	scroll         int // first visible text line on a teaching page
+	plan            lessons.Plan
+	batchStart      int  // index of the first lesson in the current batch
+	page            int  // teaching page within the batch
+	lessonMode      bool // the reviewing screen is a lesson quiz
+	loadingLessons  bool
+	started         int // lessons started on WaniKani this session
+	startFailed     int
+	startErr        error
+	settings        lessons.Settings // being edited on the settings screen
+	settingRow      int
+	height          int  // terminal rows, 0 before the first resize
+	scroll          int  // first visible text line on a teaching page
+	run             int  // review or lesson session number, for late results
+	submitForbidden bool // a review was refused for lack of reviews:create
 }
 
 // refreshSlack is how long after a forecast hour the dashboard reloads,
@@ -177,10 +183,11 @@ func (m Model) loadLessons() tea.Cmd {
 }
 
 func (m Model) startLesson(id int) tea.Cmd {
+	run := m.run
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return startedMsg{m.backend.StartLesson(ctx, id)}
+		return startedMsg{m.backend.StartLesson(ctx, id), run}
 	}
 }
 
@@ -275,11 +282,12 @@ func (m Model) login(token string) tea.Cmd {
 }
 
 func (m Model) submit(s review.Submission) tea.Cmd {
+	run := m.run
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		pending, err := m.backend.Submit(ctx, s)
-		return submittedMsg{pending, err}
+		return submittedMsg{pending, err, run}
 	}
 }
 
@@ -356,6 +364,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.loadFailed(msg.err)
 		}
 		m.plan, m.batchStart, m.page, m.scroll, m.bigDrawn = msg.plan, 0, 0, 0, ""
+		m.run++
 		m.started, m.startFailed, m.startErr = 0, 0, nil
 		m.screen = teaching
 		if len(m.plan.Lessons) == 0 {
@@ -364,6 +373,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case startedMsg:
 		m.inFlight--
+		if msg.run == m.run && errors.Is(msg.err, wanikani.ErrUnauthorized) {
+			return m.loadFailed(msg.err) // token entry; unstarted items stay lessons
+		}
+		if msg.run != m.run {
+			if m.quitting && m.inFlight == 0 {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if msg.err != nil {
 			m.startFailed++
 			m.startErr = msg.err
@@ -392,8 +410,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.toDashboard() // the lesson count depends on the settings
 	case submittedMsg:
 		m.inFlight--
+		if msg.run != m.run {
+			if m.quitting && m.inFlight == 0 {
+				return m, tea.Quit
+			}
+			return m, nil // from an earlier session: its summary is gone
+		}
 		var apiErr *wanikani.APIError
 		switch {
+		case errors.As(msg.err, &apiErr) && apiErr.Status == 403 && msg.pending:
+			m.pending++
+			m.submitForbidden = true
 		case errors.As(msg.err, &apiErr):
 			m.rejected++
 		case msg.err != nil:
@@ -457,6 +484,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.screen == summary && msg.String() == "t" && m.submitForbidden {
+			return m.loadFailed(wanikani.ErrUnauthorized) // token entry
+		}
 		if m.screen == lessonSummary && msg.String() == "t" && m.startForbidden() {
 			return m.loadFailed(wanikani.ErrUnauthorized) // token entry
 		}
@@ -485,8 +515,9 @@ func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m.loadFailed(msg.err)
 	}
-	m.pending, m.rejected, m.lost, m.lostErr = 0, 0, 0, nil // per-session counts
-	m.bigDrawn = ""                                         // a new session always draws its first item
+	m.run++
+	m.pending, m.rejected, m.lost, m.lostErr, m.submitForbidden = 0, 0, 0, nil, false // per-session counts
+	m.bigDrawn = ""                                                                   // a new session always draws its first item
 	m.skipped = msg.skipped
 	m.session = review.NewSession(msg.items, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	m.screen = reviewing
@@ -512,7 +543,12 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, m.load()
 		}
 		return m, m.loadDashboard()
-	case summary, lessonSummary:
+	case lessonSummary:
+		if m.inFlight > 0 {
+			return m, nil // wait: the dashboard's lesson count needs these starts
+		}
+		return m.toDashboard()
+	case summary:
 		return m.toDashboard()
 	case reviewing:
 		return m.answer()
