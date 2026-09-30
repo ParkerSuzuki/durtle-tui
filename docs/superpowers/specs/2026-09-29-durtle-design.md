@@ -124,7 +124,7 @@ The result of grading is one of: `Correct`, `CorrectWithTypo`, `Wrong`, `Warn`.
   to tick (`reviews:create`), and takes the pasted token in a masked input.
   The token is checked with `GET /user` before it is saved; a bad token shows
   the error and stays on this screen.
-- **Loading:** sync progress (subjects page n, assignments), then the due count.
+- **Loading:** a syncing message until items are ready.
 - **Review:** item characters, a clear prompt of which part is being asked
   (meaning or reading, visually distinct), the input line, a feedback line,
   and a progress line (done, remaining, percent correct).
@@ -135,8 +135,7 @@ Styling uses our own color theme, not WaniKani's.
 
 ## Errors
 
-- Network or API error while syncing: show it on the loading screen with a
-  retry key. Stale subject cache is fine to use if assignments loaded.
+- Network or API error while syncing: show it with a retry key (Enter).
 - Submit failure: append to `pending.json`, keep going, say so on the summary.
 - Corrupt cache file: discard it and do a full sync.
 

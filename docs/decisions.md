@@ -1,9 +1,11 @@
 # Decision log
 
-Newest at the bottom. Each entry: what we decided, why, and what we passed on.
+Newest at the bottom. Each entry: the question (Context), what we chose (Decision),
+why (Why), and the alternatives we rejected (Passed on).
 
 ## 1. Build a new client instead of forking one (2026-09-29)
 
+**Context:** Several WaniKani terminal clients already exist. Fork one or write our own?
 **Decision:** Write durtle from scratch. Use ferjjp/wk-terminal (Python, MIT) as a
 behavior reference only.
 **Why:** The project exists to learn Go. The best existing client, wk-terminal,
@@ -14,6 +16,7 @@ license file, so not legally reusable, or GPL, or too small to matter).
 
 ## 2. Go as the language (2026-09-29)
 
+**Context:** Which language to build the client in, given the goal is learning it?
 **Decision:** Go.
 **Why:** The app is network-bound with small data, so raw speed is irrelevant.
 What matters: TUI library quality (Bubble Tea is among the best in any language),
@@ -27,6 +30,7 @@ TypeScript + Ink (thinner ecosystem for full-screen apps).
 
 ## 3. Name: durtle-tui (2026-09-29)
 
+**Context:** What to call the app, given WaniKani's branding rules for third-party apps?
 **Decision:** The repo, module and binary are `durtle-tui`, after the WaniKani
 community's turtle meme. It is described as "an unofficial third-party client
 for WaniKani".
@@ -37,6 +41,7 @@ repo `durtle-tui` with a shorter `durtle` command.
 
 ## 4. Milestone 1 is reviews only (2026-09-29)
 
+**Context:** What is the smallest first milestone that is still useful every day?
 **Decision:** Sync, review, grade, submit. Nothing else.
 **Why:** It is the daily-use feature, and it exercises every Go basic: HTTP,
 JSON, structs, errors, tests, and the TUI loop.
@@ -45,6 +50,7 @@ lessons plus reviews (larger first step, needs a teaching screen).
 
 ## 5. Local data: JSON files, standard library only (2026-09-29)
 
+**Context:** Where does WaniKani data live between runs?
 **Decision:** Subjects and study materials are cached as JSON files in
 `os.UserCacheDir()/durtle`, updated incrementally with `updated_after`.
 Assignments are always fetched fresh.
@@ -55,6 +61,7 @@ no cache (about 10 requests on every launch).
 
 ## 6. Image-only radicals are skipped in milestone 1 (2026-09-29)
 
+**Context:** Some radicals have no Unicode character, only an SVG image. How are they reviewed?
 **Decision:** Radicals with no Unicode character stay due and are left for the
 website. Tracked in TODO.md.
 **Why:** Rendering them needs SVG rasterizing plus the kitty graphics protocol,
@@ -63,6 +70,7 @@ which is a milestone of its own.
 
 ## 7. Own romaji to kana converter (2026-09-29)
 
+**Context:** Reading answers are typed in romaji and must become kana. Which converter?
 **Decision:** Write a small converter in package `review`, tested against a
 table of cases.
 **Why:** The only Go port of WanaKana we found is unvetted. The converter is
@@ -70,6 +78,7 @@ roughly 150 lines and a good exercise in runes, maps, and table-driven tests.
 
 ## 8. Token entered in the app, stored in the OS keyring (2026-09-29, revised)
 
+**Context:** Where does the API token come from, and where is it stored?
 **Decision:** First run shows an onboarding screen where you paste your token.
 It is validated with `GET /user`, then saved with go-keyring (Linux Secret
 Service, macOS Keychain, Windows Credential Manager). If no keyring is
@@ -83,6 +92,7 @@ keyring only (breaks on headless machines).
 
 ## 9. Never lose a finished answer (2026-09-29)
 
+**Context:** What happens to a finished review if submitting it fails?
 **Decision:** A finished item that fails to submit goes into `pending.json`,
 which is retried on the next launch.
 **Why:** A dropped connection should not silently throw away a review.
@@ -90,12 +100,14 @@ This is not full offline mode; syncing still needs the network.
 
 ## 10. Working agreement (2026-09-29)
 
+**Context:** Who writes the code, and how are decisions made?
 **Decision:** Claude writes the code and explains the Go idioms it uses. Every
 design decision is raised with the user first and then recorded here.
 **Why:** The goal is understanding Go's choices, not typing speed.
 
 ## 11. Back-to-back review order (2026-09-29)
 
+**Context:** In what order are items and their meaning/reading questions asked?
 **Decision:** Ask one item at a time. Meaning or reading first is a coin flip
 per item. A wrong answer re-asks the same part until it is correct, then the
 other part comes up. The item is submitted once both are correct.
@@ -108,6 +120,7 @@ wrong items requeued later).
 
 ## 12. Public repo, MIT license (2026-09-29)
 
+**Context:** Where is the code hosted, and under what license?
 **Decision:** Host at github.com/ParkerSuzuki/durtle-tui, public, MIT licensed.
 The README opens by stating it is an unofficial third-party app.
 **Why:** MIT is short and permissive and matches wk-terminal, our behavior
