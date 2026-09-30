@@ -145,3 +145,20 @@ func TestSubjectTeachingFields(t *testing.T) {
 		t.Errorf("user %+v, %v", u, err)
 	}
 }
+
+func TestReviewStatistics(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/review_statistics" || r.URL.Query().Get("updated_after") == "" {
+			t.Errorf("request = %s", r.URL)
+		}
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":3,"object":"review_statistic","data_updated_at":"2026-09-30T10:00:00Z",
+			"data":{"subject_id":7,"meaning_correct":5,"meaning_incorrect":1,"reading_correct":4,"reading_incorrect":2,"hidden":false}}]}`)
+	})
+	got, err := c.ReviewStatistics(context.Background(), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if s := got[0].Data; s.SubjectID != 7 || s.MeaningCorrect != 5 || s.MeaningIncorrect != 1 || s.ReadingCorrect != 4 || s.ReadingIncorrect != 2 {
+		t.Errorf("decoded %+v", s)
+	}
+}

@@ -374,8 +374,9 @@ func (m Model) homeView() string {
 		fmt.Sprintf("%-18s %s  %d / %d", fmt.Sprintf("Level %d radicals", d.Level),
 			progressBar(p.RadicalsPassed, p.Radicals, barW, typeColors["radical"]), p.RadicalsPassed, p.Radicals),
 		"",
-		"Upcoming reviews",
 	}
+	lines = append(lines, accuracyLines(d.Today, d.Yesterday, barW)...)
+	lines = append(lines, "", "Upcoming reviews")
 	lines = append(lines, forecastLines(d.Forecast, barW)...)
 	lines = append(lines, "")
 	lines = append(lines, srsLines(d.SRS, barW)...)
@@ -684,4 +685,42 @@ func (m Model) settingsView() string {
 	}
 	lines = append(lines, "", dim.Render("↑↓ choose   ←→ change   space toggle   esc save"))
 	return strings.Join(lines, "\n")
+}
+
+// accuracyLines is the review accuracy panel: today and yesterday, and a
+// gauge from 50% to 100% with the Learning Zone (85-95%) shaded.
+func accuracyLines(today, yesterday dashboard.Answers, width int) []string {
+	pct := func(a dashboard.Answers) string {
+		if a.Total() == 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%.1f%%", a.Percent())
+	}
+	head := fmt.Sprintf("%-18s Today %s (%d)   Yesterday %s", "Correct answers", pct(today), today.Total(), pct(yesterday))
+	zone := dashboard.ZoneOf(today)
+	if zone == dashboard.NoData {
+		return []string{head, fmt.Sprintf("%-18s %s", "", dim.Render("no reviews yet today"))}
+	}
+	cell := func(p float64) int { return min(max(int((p-50)/50*float64(width)), 0), width-1) }
+	lo, hi, at := cell(dashboard.ZoneLow), cell(dashboard.ZoneHigh), cell(today.Percent())
+	zoneStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(srsColor))
+	var bar strings.Builder
+	for i := range width {
+		if i >= lo && i <= hi {
+			bar.WriteString(zoneStyle.Render("▓"))
+		} else {
+			bar.WriteString(dim.Render("░"))
+		}
+	}
+	label := map[dashboard.Zone]string{
+		dashboard.InZone:    "in the Learning Zone (85-95%)",
+		dashboard.BelowZone: "below the Learning Zone: go easier on lessons",
+		dashboard.AboveZone: "above the Learning Zone: room for more lessons",
+	}[zone]
+	return []string{
+		head,
+		fmt.Sprintf("%-18s %s", "", bar.String()),
+		fmt.Sprintf("%-18s %s", "", strings.Repeat(" ", at)+"▲"),
+		fmt.Sprintf("%-18s %s", "", label),
+	}
 }

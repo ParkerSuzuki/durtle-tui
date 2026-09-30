@@ -79,3 +79,8 @@ func (c *Client) StartAssignment(ctx context.Context, assignmentID int) error {
 	body := map[string]any{"assignment": map[string]any{}}
 	return c.do(ctx, http.MethodPut, fmt.Sprintf("%sassignments/%d/start", c.base, assignmentID), body, nil)
 }
+
+// ReviewStatistics fetches per-subject answer counters changed after t.
+func (c *Client) ReviewStatistics(ctx context.Context, t time.Time) ([]Resource[ReviewStatistic], error) {
+	return getAll[ReviewStatistic](ctx, c, updatedAfter("review_statistics", t))
+}

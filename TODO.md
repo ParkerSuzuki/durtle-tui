@@ -33,4 +33,4 @@ From the milestone 3 review (deferred minors):
 - [ ] Enter on the lesson summary while starts are still in flight reloads the dashboard too early (stale count; `l` may re-teach the same items).
 - [ ] A 401 on a lesson start counts as a failure instead of going to token entry.
 - [ ] → on the last teaching page starts the quiz (only Enter should); space adds 1 on numeric settings rows; refusing to turn off the last type is silent.
-- [ ] Measure subjects.json after the version-4 resync (mnemonics and sentences make it bigger; it is decoded on every dashboard load).
+- [ ] subjects.json is 14.9 MB after the version-4 resync (a full dashboard load takes about 3 s); consider trimming fields the dashboard does not need if loads feel slow.
