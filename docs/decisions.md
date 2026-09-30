@@ -215,3 +215,30 @@ grant, longer).
 **Decision:** Typing exactly `:q` or `:wq` in the answer box and pressing Enter ends the session and reloads the dashboard. Both mean the same thing: finished items are already submitted as you go; the item in progress is not submitted and stays due. Esc still quits the app. A dim hint line on the review screen shows both.
 **Why:** No answer can be `:q`, so reusing the answer box needs no extra mode or key, and the romaji-to-kana conversion leaves both commands untouched.
 **Passed on:** A single hotkey (every printable key is a possible answer character); making `:q` quit the app (Esc already does).
+
+## 25. Lesson rules live in durtle-tui (2026-09-30)
+
+**Context:** The user wanted lesson selection editable. WaniKani's own daily limit and "Today's Lessons" algorithm are not in the API, and the API's lesson-order preference is deprecated.
+**Decision:** durtle-tui keeps its own rules in `settings.json`: daily cap (default 10), order (classic or interleaved), type filter, batch size (seeded from the WaniKani preference). Lessons started today are counted from the assignment cache, so website lessons count toward the cap.
+**Why:** The only way to make the choice editable is to own it; counting from assignments keeps both clients honest about the same daily total.
+**Passed on:** Mirroring WaniKani's daily limit (not readable); a free-form lesson picker (more UI than the need).
+
+## 26. Settings screen, local only (2026-09-30)
+
+**Context:** Where to edit the rules, and whether to sync batch size to WaniKani.
+**Decision:** An in-app settings screen (`s` on the dashboard), saved locally. Nothing is written back to WaniKani.
+**Why:** Easy for new users of a public tool; writing preferences would need the `user:update` permission for a small gain.
+**Passed on:** Hand-editing a config file only; syncing batch size via `PUT /user`.
+
+## 27. Quiz reuses the review engine, starts items one by one (2026-09-30)
+
+**Context:** The API starts lessons without a quiz; the website quizzes each batch.
+**Decision:** Each batch is quizzed with `review.Session` (back-to-back, same grading). Each item is started with `PUT /assignments/<id>/start` as soon as its quiz part is passed. Quiz answers never go to `POST /reviews`. A failed start is shown, not queued: the item simply stays a lesson.
+**Why:** The quiz aids retention and costs almost no new code. Starting per item means `:q` mid-quiz keeps what was learned. There is nothing to lose on failure, so no pending queue is needed.
+**Passed on:** No quiz (faster, worse retention); starting the whole batch at the end (a quit mid-quiz would discard passed items).
+
+## 28. Default daily cap of 10 (2026-09-30)
+
+**Context:** New users of the public repo need a starting cap.
+**Decision:** 10 per day; the user sets theirs (1) once on the settings screen.
+**Why:** Moderate for most learners without flooding reviews a week later.
