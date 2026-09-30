@@ -188,3 +188,66 @@ parameter.
 (`{AssignmentID:1 IncorrectMeaning:1 IncorrectReading:0}`), which makes
 failures readable. Structs with only comparable fields can be compared
 with `==`, as `*sub != want` does.
+
+## 5. JSON, generics, context, and errors
+
+Code: [wanikani/types.go](../wanikani/types.go), [wanikani/client.go](../wanikani/client.go), [wanikani/client_test.go](../wanikani/client_test.go)
+
+**Struct tags drive `encoding/json`.** `` `json:"subject_id"` `` after a field
+tells the decoder which JSON key maps to it. Only *exported* (capitalized)
+fields are visible to the `json` package, which is why the fields are
+`SubjectID`, not `subjectID`. Keys in the JSON that have no matching field
+are silently ignored, so these structs list only what durtle-tui uses.
+
+**`*string` for JSON `null`.** A plain `string` cannot tell "missing or
+null" from "empty". `Characters *string` is `nil` when the API sends `null`
+(image-only radicals), and callers must check before dereferencing.
+
+**Generics (Go 1.18+).** Every WaniKani object has the same envelope (`id`,
+`object`, `data_updated_at`, `data`), with a different `data` shape.
+`Resource[T any]` writes the envelope once; `Resource[Subject]` and
+`Resource[Assignment]` are the concrete types. Before generics you would
+copy the envelope into every struct or decode `data` in two passes.
+
+**`context.Context` is the first parameter of anything that can block.** It
+carries cancellation and deadlines. `http.NewRequestWithContext(ctx, ...)`
+aborts the request if the context is cancelled, and `waitUntil` uses
+`select` to wait on *either* the rate-limit timer *or* `ctx.Done()`,
+whichever fires first. Later the UI gives each network call a timeout this
+way.
+
+**`select`** waits on several channel operations at once and runs the first
+one that is ready. `timer.C` and `ctx.Done()` are both channels.
+
+**Errors are values, returned, not thrown.** Every call that can fail
+returns an `error` as its last result, and the caller checks
+`if err != nil`. Verbose, but every failure path is visible in the code.
+
+**Two kinds of errors here:**
+- A *sentinel*: `var ErrUnauthorized = errors.New(...)`. Callers test it
+  with `errors.Is(err, wanikani.ErrUnauthorized)`.
+- A *custom error type*: `*APIError` carries the status code. Any type with
+  an `Error() string` method is an `error` (implicit interfaces again).
+  Callers extract it with `errors.As(err, &apiErr)`, which fills `apiErr`
+  if the error, or anything it wraps, is an `*APIError`.
+
+**Wrapping with `%w`.** `fmt.Errorf("decoding %s: %w", url, err)` adds
+context but keeps the original error inside, so `errors.Is` and `errors.As`
+still see it. `%v` would flatten it to text.
+
+**`defer`** schedules a call for when the surrounding *function* returns.
+`defer resp.Body.Close()` in `decode` guarantees the connection is released
+on every return path. It is not used inside the retry loop in `do`: defers
+pile up until the function exits, so a loop would hold every retried body
+open. The loop closes the 429 body explicitly instead.
+
+**`any`** is an alias for `interface{}`, the empty interface every type
+satisfies. `do` takes `body, out any` so one function serves every endpoint;
+`json.Marshal` and `Decode` work out the real type at runtime.
+
+**Testing HTTP with `httptest.NewServer`.** Each test starts a real local
+server with a handler function, and the client is pointed at it through
+`NewClient(srv.URL+"/", ...)`. Passing the base URL into the constructor is
+what makes this possible: no mocking library, no global variables.
+`t.Helper()` makes failures report the caller's line, and `t.Cleanup` shuts
+the server down when the test ends.
