@@ -111,10 +111,11 @@ type Model struct {
 	startErr        error
 	settings        lessons.Settings // being edited on the settings screen
 	settingRow      int
-	height          int  // terminal rows, 0 before the first resize
-	scroll          int  // first visible text line on a teaching page
-	run             int  // review or lesson session number, for late results
-	submitForbidden bool // a review was refused for lack of reviews:create
+	settingsNote    string // why the last settings change was refused
+	height          int    // terminal rows, 0 before the first resize
+	scroll          int    // first visible text line on a teaching page
+	run             int    // review or lesson session number, for late results
+	submitForbidden bool   // a review was refused for lack of reviews:create
 }
 
 // refreshSlack is how long after a forecast hour the dashboard reloads,
@@ -466,7 +467,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.page++
 					return m, nil
 				}
-				return m.quiz()
+				if msg.String() == "enter" { // only Enter starts the quiz; → is often a stray key
+					return m.quiz()
+				}
+				return m, nil
 			case "left":
 				m.page, m.scroll = max(m.page-1, 0), 0
 				return m, nil
@@ -660,6 +664,10 @@ func (m Model) saveSettings() tea.Cmd {
 func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
 	s := &m.settings
 	prev := *s
+	m.settingsNote = ""
+	if key == "space" && (m.settingRow == 0 || m.settingRow == 5) {
+		return m, nil // space toggles; it does not count
+	}
 	switch key {
 	case "up":
 		m.settingRow = (m.settingRow + settingRows - 1) % settingRows
@@ -689,7 +697,8 @@ func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
 			s.BatchSize += d
 		}
 		if s.Types == (lessons.Types{}) {
-			*s = prev // at least one type stays on
+			*s = prev
+			m.settingsNote = "At least one type must stay on."
 		}
 		*s = s.Clamp()
 	case "esc", "enter":

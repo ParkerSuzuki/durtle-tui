@@ -403,6 +403,9 @@ func TestDashboardShowsPanels(t *testing.T) {
 		m, _ = step(t, m, dashboardMsg{d: sampleDash})
 		got := stripANSI(m.View().Content)
 		for _, want := range []string{"Level 12", "Lessons", "Reviews", "67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
+			if want == "30 needed" && width < 61 {
+				continue // narrow terminals drop the level-up suffix so nothing wraps
+			}
 			if !strings.Contains(got, want) {
 				t.Errorf("width %d: dashboard missing %q", width, want)
 			}
@@ -462,7 +465,7 @@ func TestSummaryReturnsToDashboard(t *testing.T) {
 
 // No dashboard line may be wider than the terminal once there is room for it.
 func TestDashboardFitsWidth(t *testing.T) {
-	for _, width := range []int{80, 100, 140} {
+	for _, width := range []int{60, 70, 80, 100, 140} {
 		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
 		m, _ = step(t, m, dashboardMsg{d: sampleDash})
 		for _, line := range strings.Split(m.View().Content, "\n") {
@@ -947,5 +950,34 @@ func TestLateResultIgnoredByNextSession(t *testing.T) {
 	m, _ = step(t, m, loadedMsg{items: fb.items}) // next session starts
 	if m, _ = step(t, m, late()); m.lost != 0 || m.inFlight != 0 {
 		t.Errorf("late result: lost %d inFlight %d; want 0 and 0", m.lost, m.inFlight)
+	}
+}
+
+// Only Enter starts the quiz: → on the last page is a stray key, not a choice.
+func TestRightOnLastPageDoesNotStartQuiz(t *testing.T) {
+	m := lessonModel(t, &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical}, BatchSize: 3}})
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight}); m.screen != teaching {
+		t.Fatalf("→ on the last page: screen %v, want to stay teaching", m.screen)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != reviewing {
+		t.Errorf("Enter on the last page: screen %v, want the quiz", m.screen)
+	}
+}
+
+// Space toggles, it does not count; refusing to turn off the last type says why.
+func TestSettingsSpaceAndRefusal(t *testing.T) {
+	fb := &fakeBackend{settings: lessons.Settings{DailyCap: 5, Order: lessons.Classic, Types: lessons.Types{Kanji: true}, BatchSize: 3}}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m, _ = step(t, m, cmd())
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeySpace}); m.settings.DailyCap != 5 {
+		t.Errorf("space on the cap row changed it to %d", m.settings.DailyCap)
+	}
+	for range 3 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyDown}) // kanji row
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeySpace})
+	if got := stripANSI(m.View().Content); !m.settings.Types.Kanji || !strings.Contains(got, "At least one type") {
+		t.Errorf("turning off the last type should be refused with a reason:\n%s", got)
 	}
 }

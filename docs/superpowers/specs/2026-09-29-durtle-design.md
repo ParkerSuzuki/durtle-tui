@@ -92,7 +92,7 @@ Back-to-back order, matching the "Back to back" and "Reorder Omega" userscripts
   of type `whitelist`, and your study-material synonyms.
 - Exact match with a `blacklist` auxiliary meaning is wrong, before typo tolerance runs.
 - Typo tolerance is Optimal String Alignment distance, with the allowed number
-  of edits depending on the answer's length L:
+  of edits depending on the length L of the accepted meaning being compared:
   - L <= 3: 0 edits
   - L 4 to 5: 1 edit
   - L 6 to 7: 2 edits
