@@ -127,3 +127,31 @@ The README opens by stating it is an unofficial third-party app.
 reference. The API terms require the unofficial label up front.
 **Passed on:** GPL-3.0 (forces forks to stay open); Apache-2.0 (adds a patent
 grant, longer).
+
+## 13. Charm v2 libraries (2026-09-29)
+
+**Context:** Bubble Tea, Bubbles and Lip Gloss each have a v1 and a v2 line.
+**Decision:** Use v2, imported from `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`, `charm.land/lipgloss/v2`.
+**Why:** v2 is where maintenance happens (v2.0.10 shipped 2026-09-24); v1 has had no release since 2025.
+**Passed on:** v1 (more tutorials online, but frozen).
+
+## 14. store package and a Backend interface (2026-09-29)
+
+**Context:** The UI must log in, sync, and submit, but should be testable without a network or a keyring.
+**Decision:** Add package `store` (token plus JSON files). `ui` declares a three-method `Backend` interface; `package main` implements it by combining `wanikani` and `store`. Tests pass a fake.
+**Why:** "Accept interfaces, return structs": the consumer defines the small interface it needs. Keeps `ui` free of HTTP and disk code.
+**Passed on:** `ui` importing `wanikani` and `store` directly (untestable without a server); a struct of function fields (works, less idiomatic).
+
+## 15. Answer flow (2026-09-29)
+
+**Context:** What happens on screen after each answer?
+**Decision:** Correct answers advance immediately with a short confirmation line. Wrong answers show the accepted answers and wait for Enter. Warnings (kana in a meaning, wrong reading type) keep the input so you can fix it.
+**Why:** Matches the website's rhythm and gives time to read the correction.
+**Passed on:** Waiting for Enter after every answer (slower); auto-advancing after wrong answers (no time to read).
+
+## 16. Color palette (2026-09-29)
+
+**Context:** The API terms forbid copying WaniKani's visual design, including its pink/blue/purple.
+**Decision:** Radical teal `#2A9D8F`, kanji amber `#E9A23B`, vocabulary green `#6A994E`. Meaning prompt: light bar `#F4F1DE` with `#1D1D1D` text. Reading prompt: dark bar `#3D405B` with `#F4F1DE` text.
+**Why:** Distinct from WaniKani, readable on dark and light terminals, meaning vs reading is obvious at a glance.
+**Passed on:** Nothing formal; the user accepted it "for now", so revisit once it is on screen.
