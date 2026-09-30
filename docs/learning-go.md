@@ -88,3 +88,53 @@ That one rule replaces `public`/`private` keywords.
 **`t.Errorf` vs `t.Fatalf`.** `Errorf` records a failure and keeps going, so
 one run reports every broken row. `Fatalf` stops the test, for when later
 checks would be meaningless.
+
+## 3. Named types, enums with iota, and methods
+
+Code: [review/item.go](../review/item.go), [review/grade.go](../review/grade.go)
+
+**Named types.** `type Part int` makes a new type whose underlying
+representation is `int`, but the compiler treats it as distinct: you cannot
+pass a plain `int` or a `Verdict` where a `Part` is expected without an
+explicit conversion. That is cheap type safety.
+
+**Go has no `enum` keyword; `iota` fills the gap.** Inside a `const (...)`
+block, `iota` starts at 0 and increases by one per line, and lines without
+an expression repeat the previous one. So `Wrong Verdict = iota` followed by
+bare `Correct`, `CorrectTypo`, `Warn` gives 0, 1, 2, 3, all typed `Verdict`.
+Putting `Wrong` first means the zero value (what an uninitialized `Verdict`
+holds) is the safe one.
+
+**Methods attach to any named type,** not just structs:
+`func (p Part) String() string`. The `(p Part)` part is the *receiver*.
+Because `Part` now has a `String() string` method, it satisfies the standard
+library's `fmt.Stringer` interface, so `fmt.Printf("%v", p)` prints
+"reading" instead of 1. Nothing declares that `Part` implements `Stringer`:
+Go interfaces are satisfied implicitly, by having the right methods.
+
+**`[...]string{...}[v]`** is an array literal whose length the compiler
+counts, indexed immediately. A compact way to map a small enum to names.
+
+**Struct literals: positional vs named.** `Grade{Warn, "hint"}` fills fields
+in order; `Grade{Verdict: Wrong}` names them and leaves the rest at their
+zero value (`""` for `Hint`). Named is safer when a struct might grow; `go
+vet` insists on it for structs from other packages.
+
+**Zero values mean "no constructor needed".** An `Item` with no `Readings`
+has a `nil` slice, and `len(nil)` is 0, so `HasReading` just works. Go
+avoids null checks by giving every type a usable zero value.
+
+**Slices of slices.** `osaDistance` builds its dynamic programming grid
+with `make([][]int, rows)` and then one `make([]int, cols)` per row. Go has
+no built-in 2D array with runtime sizes; a slice of slices is the idiom.
+
+**`[]rune(a)`** converts a string to its code points so the edit distance
+counts characters, not UTF-8 bytes. (Matters for accented synonyms.)
+
+**`switch` with no value** (`switch { case n <= 3: ...}`) is Go's clean
+if/else-if chain. Cases do not fall through, so no `break` needed.
+
+**Why `review` has its own `Item` type** instead of using the API's JSON
+structs: `review` should not know HTTP or JSON exists. It depends on nothing,
+so it can be tested alone, and the API shape can change without touching
+the grading code. Package `main` translates between the two (Task 7).
