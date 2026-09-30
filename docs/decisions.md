@@ -25,12 +25,15 @@ converter. SVG radicals later need a library or `rsvg-convert`.
 Rust + Ratatui (best WanaKana port, but much steeper to learn for no payoff here);
 TypeScript + Ink (thinner ecosystem for full-screen apps).
 
-## 3. Name: durtle (2026-09-29)
+## 3. Name: durtle-tui (2026-09-29)
 
-**Decision:** The app and binary are `durtle`, after the WaniKani community's
-turtle meme. It is described as "an unofficial third-party client for WaniKani".
+**Decision:** The repo, module and binary are `durtle-tui`, after the WaniKani
+community's turtle meme. It is described as "an unofficial third-party client
+for WaniKani".
 **Why:** The API terms forbid "WaniKani" in a product name and require the
-unofficial label.
+unofficial label. The `-tui` suffix says what it is at a glance.
+**Passed on:** `durtle-cli` (it is a full-screen TUI, not a line-based CLI);
+repo `durtle-tui` with a shorter `durtle` command.
 
 ## 4. Milestone 1 is reviews only (2026-09-29)
 
@@ -65,12 +68,18 @@ table of cases.
 **Why:** The only Go port of WanaKana we found is unvetted. The converter is
 roughly 150 lines and a good exercise in runes, maps, and table-driven tests.
 
-## 8. API token lives in the system keyring (2026-09-29)
+## 8. Token entered in the app, stored in the OS keyring (2026-09-29, revised)
 
-**Decision:** Read the token with `secret-tool lookup service durtle`, falling
-back to the `DURTLE_TOKEN` environment variable.
-**Why:** Tokens never go in files that could be committed or synced. Matches how
-the rest of this machine stores credentials.
+**Decision:** First run shows an onboarding screen where you paste your token.
+It is validated with `GET /user`, then saved with go-keyring (Linux Secret
+Service, macOS Keychain, Windows Credential Manager). If no keyring is
+available, it goes to `os.UserConfigDir()/durtle-tui/token` with mode 0600.
+This is the same pattern GitHub's `gh` CLI uses.
+**Why:** The repo is public, so onboarding must be easy and work on any OS.
+A keyring keeps the token out of plain-text files where one exists.
+**Passed on:** `secret-tool` plus an environment variable (the original plan,
+Linux only and fiddly for new users); config file only (plain text on disk);
+keyring only (breaks on headless machines).
 
 ## 9. Never lose a finished answer (2026-09-29)
 
@@ -84,3 +93,24 @@ This is not full offline mode; syncing still needs the network.
 **Decision:** Claude writes the code and explains the Go idioms it uses. Every
 design decision is raised with the user first and then recorded here.
 **Why:** The goal is understanding Go's choices, not typing speed.
+
+## 11. Back-to-back review order (2026-09-29)
+
+**Decision:** Ask one item at a time. Meaning or reading first is a coin flip
+per item. A wrong answer re-asks the same part until it is correct, then the
+other part comes up. The item is submitted once both are correct.
+**Why:** It is how the user already reviews on the website, via the "Back to
+back" (https://greasyfork.org/en/scripts/439837) and "Reorder Omega"
+(https://greasyfork.org/en/scripts/441619) userscripts. It also makes the
+session logic simpler: no requeueing, just a list and a position.
+**Passed on:** WaniKani's default (parts interleaved across the whole queue,
+wrong items requeued later).
+
+## 12. Public repo, MIT license (2026-09-29)
+
+**Decision:** Host at github.com/ParkerSuzuki/durtle-tui, public, MIT licensed.
+The README opens by stating it is an unofficial third-party app.
+**Why:** MIT is short and permissive and matches wk-terminal, our behavior
+reference. The API terms require the unofficial label up front.
+**Passed on:** GPL-3.0 (forces forks to stay open); Apache-2.0 (adds a patent
+grant, longer).

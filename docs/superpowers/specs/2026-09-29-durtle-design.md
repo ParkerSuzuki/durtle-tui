@@ -1,6 +1,6 @@
-# durtle: milestone 1 design (reviews)
+# durtle-tui: milestone 1 design (reviews)
 
-durtle is an unofficial third-party terminal client for WaniKani, written in Go.
+durtle-tui is an unofficial third-party terminal client for WaniKani, written in Go.
 Milestone 1 does one thing: run your due reviews from the terminal and submit
 them to WaniKani, graded the way the website grades them.
 
@@ -24,7 +24,7 @@ visual similarity to the WaniKani website (forbidden by the API terms anyway).
 
 ```
 ~/WaniKani/
-  go.mod               module github.com/ParkerSuzuki/durtle
+  go.mod               module github.com/ParkerSuzuki/durtle-tui
   main.go              wiring: token, client, cache, start the UI
   wanikani/            API client: types, requests, paging, rate limits
   review/              pure logic: grading, typo tolerance, kana, session queue
@@ -37,15 +37,18 @@ Dependency direction: `main` -> `ui` -> `review`, and `main` -> `wanikani`.
 `review` imports nothing outside the standard library and never touches the
 network or the screen, so it is fully unit testable.
 
-External dependencies: Bubble Tea, Bubbles (text input), Lip Gloss (styling).
+External dependencies: Bubble Tea, Bubbles (text input), Lip Gloss (styling),
+go-keyring (token storage).
 Everything else is standard library.
 
 ## Data flow
 
-1. **Token.** Run `secret-tool lookup service durtle`. If that fails, read the
-   `DURTLE_TOKEN` environment variable. Neither present: print how to store one
-   and exit. Required token permissions: `reviews:create` (plus the default read access).
-2. **Subjects.** Load `$XDG_CACHE_HOME/durtle/subjects.json` (via
+1. **Token.** Load it from the OS keyring (go-keyring: Secret Service on Linux,
+   Keychain on macOS, Credential Manager on Windows), falling back to
+   `os.UserConfigDir()/durtle-tui/token` with file mode 0600. None found: show
+   the onboarding screen. Required token permissions: `reviews:create` (plus the
+   default read access).
+2. **Subjects.** Load `$XDG_CACHE_HOME/durtle-tui/subjects.json` (via
    `os.UserCacheDir`). Fetch `GET /subjects?updated_after=<last sync>`, following
    `pages.next_url` until null, merge by subject id, write the file back.
    First run fetches everything (about 10 pages).
@@ -63,12 +66,17 @@ Everything else is standard library.
 
 ## Review session rules
 
+Back-to-back order, matching the "Back to back" and "Reorder Omega" userscripts
+(https://greasyfork.org/en/scripts/439837, https://greasyfork.org/en/scripts/441619):
+
+- Items are shuffled. One item is asked at a time until it is finished.
 - Radicals and kana-only vocabulary ask for meaning only. Kanji and vocabulary
-  ask for meaning and reading, in random order, not necessarily back to back.
+  ask for both parts; which part comes first is a coin flip per item.
 - A wrong answer shows the accepted answers, increments that part's incorrect
-  count, and puts the item back into the queue at a random later position.
+  count, then asks the same part again until it is answered correctly.
+  Only then does the other part come up.
 - An item is finished when both of its parts have been answered correctly.
-  It is submitted immediately in the background.
+  It is submitted immediately in the background, and the next item starts.
 - Quitting mid-session is safe: finished items are already submitted or in
   `pending.json`; unfinished items are simply not submitted and stay due.
 
@@ -110,6 +118,12 @@ The result of grading is one of: `Correct`, `CorrectWithTypo`, `Wrong`, `Warn`.
 
 ## Screens (package `ui`)
 
+- **Onboarding** (first run, or when the API answers 401): says what durtle-tui
+  is (unofficial, third-party), links to
+  https://www.wanikani.com/settings/personal_access_tokens, lists the permission
+  to tick (`reviews:create`), and takes the pasted token in a masked input.
+  The token is checked with `GET /user` before it is saved; a bad token shows
+  the error and stays on this screen.
 - **Loading:** sync progress (subjects page n, assignments), then the due count.
 - **Review:** item characters, a clear prompt of which part is being asked
   (meaning or reading, visually distinct), the input line, a feedback line,
