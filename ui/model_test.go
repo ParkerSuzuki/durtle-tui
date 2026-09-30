@@ -981,3 +981,67 @@ func TestSettingsSpaceAndRefusal(t *testing.T) {
 		t.Errorf("turning off the last type should be refused with a reason:\n%s", got)
 	}
 }
+
+// In kitty, an image-only radical is uploaded once and drawn with Unicode
+// placeholders inside the block; elsewhere it stays half-block art.
+func TestKittyRadicalImage(t *testing.T) {
+	img := image.NewAlpha(image.Rect(0, 0, 20, 20))
+	beggar := review.Item{AssignmentID: 9, Type: "radical", Meanings: []string{"Beggar"}, Image: img, PNG: []byte("png-bytes")}
+
+	m, _ := step(t, New(&fakeBackend{}, true), tea.WindowSizeMsg{Width: 80, Height: 40})
+	m, cmd := step(t, m, loadedMsg{items: []review.Item{beggar}})
+	if !sendsRaw(cmd, "\x1b_Ga=T,U=1,f=100,i=") {
+		t.Error("the radical's PNG was not uploaded to kitty")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "\U0010EEEE") {
+		t.Error("kitty view should draw the radical with image placeholders")
+	}
+	if !strings.Contains(view, "\x1b[38;5;1m\U0010EEEE") {
+		t.Error("the image id (foreground color 1) must survive the block's styling")
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("line is %d cells wide on an 80-column screen", w)
+		}
+	}
+
+	plain, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 80, Height: 40})
+	plain, cmd = step(t, plain, loadedMsg{items: []review.Item{beggar}})
+	if sendsRaw(cmd, "\x1b_G") || strings.Contains(plain.View().Content, "\U0010EEEE") {
+		t.Error("outside kitty: no upload, no placeholders")
+	}
+}
+
+// sendsRaw runs cmd (and batches) briefly and reports whether any raw
+// terminal output starts with prefix.
+func sendsRaw(cmd tea.Cmd, prefix string) bool {
+	if cmd == nil {
+		return false
+	}
+	found := make(chan bool, 64)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		go func() {
+			switch msg := c().(type) {
+			case tea.RawMsg:
+				if s, ok := msg.Msg.(string); ok && strings.HasPrefix(s, prefix) {
+					found <- true
+				}
+			case tea.BatchMsg:
+				for _, sub := range msg {
+					if sub != nil {
+						run(sub)
+					}
+				}
+			}
+		}()
+	}
+	run(cmd)
+	select {
+	case <-found:
+		return true
+	case <-time.After(200 * time.Millisecond):
+		return false
+	}
+}

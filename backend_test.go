@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	pngpkg "image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,7 +44,7 @@ func TestBuildItems(t *testing.T) {
 		{ID: 20, Data: wanikani.Assignment{SubjectID: 2}},  // image-only radical: skipped
 		{ID: 30, Data: wanikani.Assignment{SubjectID: 99}}, // unknown subject: skipped
 	}
-	items, _ := buildItems(assignments, subjects, map[int][]string{1: {"massive"}}, func(wanikani.Resource[wanikani.Subject]) image.Image { return nil })
+	items, _ := buildItems(assignments, subjects, map[int][]string{1: {"massive"}}, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return nil, nil })
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -186,9 +188,14 @@ func TestRadicalImage(t *testing.T) {
 	rad := wanikani.Resource[wanikani.Subject]{ID: 7, Object: "radical", Data: wanikani.Subject{
 		CharacterImages: []wanikani.CharacterImage{{URL: srv.URL + "/png", ContentType: "image/png"}, {URL: srv.URL + "/svg", ContentType: "image/svg+xml"}},
 	}}
-	img := b.radicalImage(context.Background(), rad)
+	img, _ := b.radicalArt(context.Background(), rad)
 	if img == nil {
 		t.Fatal("no image")
+	}
+	if _, png := b.radicalArt(context.Background(), rad); len(png) == 0 {
+		t.Error("no PNG for kitty")
+	} else if cfg, err := pngpkg.DecodeConfig(bytes.NewReader(png)); err != nil || cfg.Width != radicalPNGPx {
+		t.Errorf("kitty PNG is %d px wide (%v), want %d", cfg.Width, err, radicalPNGPx)
 	}
 	if got := img.Bounds().Dx(); got != radicalArtPx {
 		t.Errorf("image is %d px wide, want %d", got, radicalArtPx)
@@ -197,7 +204,7 @@ func TestRadicalImage(t *testing.T) {
 		t.Error("the stroke through the middle is missing")
 	}
 	srv.Close()
-	if b.radicalImage(context.Background(), rad) == nil || hits != 1 {
+	if img, _ := b.radicalArt(context.Background(), rad); img == nil || hits != 1 {
 		t.Errorf("second call should come from the cache (hits = %d)", hits)
 	}
 }
@@ -210,11 +217,11 @@ func TestBuildItemsImageRadicals(t *testing.T) {
 	assignments := []wanikani.Resource[wanikani.Assignment]{{ID: 20, Data: wanikani.Assignment{SubjectID: 2}}}
 	pic := image.NewAlpha(image.Rect(0, 0, 2, 2))
 
-	items, skipped := buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) image.Image { return pic })
+	items, skipped := buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return pic, []byte("png") })
 	if len(items) != 1 || items[0].Image != pic || items[0].Meanings[0] != "Beggar" || skipped != 0 {
 		t.Errorf("with an image: items %+v, skipped %d", items, skipped)
 	}
-	items, skipped = buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) image.Image { return nil })
+	items, skipped = buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return nil, nil })
 	if len(items) != 0 || skipped != 1 {
 		t.Errorf("without an image: %d items, skipped %d; want 0 and 1", len(items), skipped)
 	}

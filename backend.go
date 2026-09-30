@@ -50,6 +50,10 @@ const (
 // 10 rows of half-block characters.
 const radicalArtPx = 20
 
+// radicalPNGPx is the size of the sharper PNG that kitty draws over the same
+// 20x10 cell area (decision 30).
+const radicalPNGPx = 160
+
 // resourceCache is the on-disk form of a synced collection.
 type resourceCache[T any] struct {
 	Version int                          `json:"version"`
@@ -198,7 +202,7 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, skipped := buildItems(assignments, subjects, synonyms, art)
 	return items, skipped, nil
 }
@@ -381,7 +385,7 @@ func rejected(err error) bool {
 // art returns nil they are skipped and counted.
 func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 	subjects map[int]wanikani.Resource[wanikani.Subject], synonyms map[int][]string,
-	art func(wanikani.Resource[wanikani.Subject]) image.Image) (items []review.Item, skipped int) {
+	art func(wanikani.Resource[wanikani.Subject]) (image.Image, []byte)) (items []review.Item, skipped int) {
 	for _, a := range assignments {
 		s, ok := subjects[a.Data.SubjectID]
 		if !ok {
@@ -390,7 +394,7 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 		it := review.Item{AssignmentID: a.ID, Type: s.Object}
 		if s.Data.Characters != nil {
 			it.Characters = *s.Data.Characters
-		} else if it.Image = art(s); it.Image == nil {
+		} else if it.Image, it.PNG = art(s); it.Image == nil {
 			skipped++
 			continue
 		}
@@ -427,11 +431,12 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 	return items, skipped
 }
 
-// radicalImage returns the picture for a radical with no Unicode character:
-// its SVG, downloaded once into the cache, rasterized by rsvg-convert (see
-// decision 20). It returns nil when that is not possible, for example when
-// rsvg-convert is not installed or the download fails.
-func (b *backend) radicalImage(ctx context.Context, s wanikani.Resource[wanikani.Subject]) image.Image {
+// radicalArt returns the pictures for a radical with no Unicode character:
+// a small image for half-block art everywhere, and a sharper PNG for kitty.
+// Both come from its SVG, downloaded once into the cache and rasterized by
+// rsvg-convert (decisions 20 and 30). The image is nil when that is not
+// possible, for example when rsvg-convert is not installed.
+func (b *backend) radicalArt(ctx context.Context, s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) {
 	var url string
 	for _, ci := range s.Data.CharacterImages {
 		if ci.ContentType == "image/svg+xml" {
@@ -439,24 +444,31 @@ func (b *backend) radicalImage(ctx context.Context, s wanikani.Resource[wanikani
 		}
 	}
 	if url == "" {
-		return nil
+		return nil, nil
 	}
 	path := filepath.Join(b.dir, "radicals", fmt.Sprintf("%d.svg", s.ID))
 	if _, err := os.Stat(path); err != nil {
 		if err := download(ctx, url, path); err != nil {
-			return nil
+			return nil, nil
 		}
 	}
-	size := fmt.Sprint(radicalArtPx)
-	out, err := exec.CommandContext(ctx, "rsvg-convert", "-w", size, "-h", size, path).Output()
-	if err != nil {
-		return nil
+	rasterize := func(px int) []byte {
+		size := fmt.Sprint(px)
+		out, err := exec.CommandContext(ctx, "rsvg-convert", "-w", size, "-h", size, path).Output()
+		if err != nil {
+			return nil
+		}
+		return out
 	}
-	img, err := png.Decode(bytes.NewReader(out))
-	if err != nil {
-		return nil
+	small := rasterize(radicalArtPx)
+	if small == nil {
+		return nil, nil
 	}
-	return img
+	img, err := png.Decode(bytes.NewReader(small))
+	if err != nil {
+		return nil, nil
+	}
+	return img, rasterize(radicalPNGPx)
 }
 
 // download saves url to path. It sends no API token: images live on a
@@ -574,7 +586,11 @@ func lessonCandidates(now time.Time, sum wanikani.Summary,
 // must not take daily-cap slots they can never use.
 func (b *backend) drawable(ctx context.Context) func(wanikani.Resource[wanikani.Subject]) bool {
 	return func(s wanikani.Resource[wanikani.Subject]) bool {
-		return s.Data.Characters != nil || b.radicalImage(ctx, s) != nil
+		if s.Data.Characters != nil {
+			return true
+		}
+		img, _ := b.radicalArt(ctx, s)
+		return img != nil
 	}
 }
 
@@ -626,7 +642,7 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 	for _, c := range picked {
 		due = append(due, assignments[c.AssignmentID])
 	}
-	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, _ := buildItems(due, subjects, synonyms, art)
 	return lessons.Plan{Lessons: buildLessons(items, assignments, subjects), BatchSize: settings.BatchSize}, nil
 }

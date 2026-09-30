@@ -29,6 +29,7 @@ type Item struct {
 	OtherReadings []string    // kanji readings WaniKani knows but is not asking for
 	ReadingKind   string      // "on'yomi", "kun'yomi", "nanori", or ""
 	Image         image.Image // radicals with no Unicode character; Characters is ""
+	PNG           []byte      // the same radical as a sharper PNG, for kitty
 }
 
 // HasReading reports whether this item asks for a reading at all.

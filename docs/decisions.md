@@ -251,3 +251,11 @@ grant, longer).
 **Why:** It counts reviews done anywhere, website included. Answers are counted separately for meaning and reading, wrong attempts included, which is how the community reports WaniKani counts it (not confirmed by staff).
 **Known limits:** Answers since the last sync land on the day of the most recent update, so a day without opening durtle-tui is merged into the next. Reviews before the very first sync are never counted.
 **Passed on:** Logging only durtle-tui's own answers (exact, but blind to the website).
+
+## 30. Sharp radical images in kitty via Unicode placeholders (2026-09-30)
+
+**Context:** Image-only radicals were half-block art everywhere (decision 20). The user wanted them sharper in kitty.
+**Decision:** The backend also rasterizes a 160 px PNG. In kitty (`TERM=xterm-kitty`) the UI uploads each radical's PNG once with `tea.Raw` (kitty graphics protocol, `a=T,U=1`, image ids 1-255) and draws it in the same 20x10 cell area with Unicode placeholder cells (U+10EEEE plus row and column diacritics, the image id as a 256-color foreground). Other terminals keep half-block art.
+**Why:** Placeholders are ordinary text, so Bubble Tea's renderer keeps them (verified in its source and with a spike and one real kitty window); no timing hack like the big kanji need. The 256-color form survives any color profile, unlike a 24-bit id.
+**Passed on:** Direct image placement at a cursor position (needs the same timing hack as OSC 66 and breaks on redraws); a pure-Go SVG renderer (decision 20's reasons).
+**Known limit:** Uploaded images are not freed on quit; kitty drops them when the window closes.

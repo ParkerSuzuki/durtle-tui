@@ -111,11 +111,12 @@ type Model struct {
 	startErr        error
 	settings        lessons.Settings // being edited on the settings screen
 	settingRow      int
-	settingsNote    string // why the last settings change was refused
-	height          int    // terminal rows, 0 before the first resize
-	scroll          int    // first visible text line on a teaching page
-	run             int    // review or lesson session number, for late results
-	submitForbidden bool   // a review was refused for lack of reviews:create
+	settingsNote    string        // why the last settings change was refused
+	height          int           // terminal rows, 0 before the first resize
+	scroll          int           // first visible text line on a teaching page
+	run             int           // review or lesson session number, for late results
+	submitForbidden bool          // a review was refused for lack of reviews:create
+	imageIDs        map[int]uint8 // kitty image id per assignment, for radical pictures
 }
 
 // refreshSlack is how long after a forecast hour the dashboard reloads,
@@ -164,6 +165,29 @@ func (m Model) toDashboard() (tea.Model, tea.Cmd) {
 	m.feedback = ""
 	m.input.Reset()
 	return m, m.loadDashboard()
+}
+
+// radicalCols and radicalRows are the cell area of a radical picture: the
+// half-block art's size, which the kitty image fills too.
+const radicalCols, radicalRows = 20, 10
+
+// uploadImages gives each radical picture an image id and, in kitty, sends
+// its PNG once; the view then draws it with placeholders (decision 30).
+func (m Model) uploadImages(items []review.Item) (Model, tea.Cmd) {
+	m.imageIDs = map[int]uint8{}
+	if !m.bigText {
+		return m, nil
+	}
+	var cmds []tea.Cmd
+	for _, it := range items {
+		if len(it.PNG) == 0 || len(m.imageIDs) == 255 {
+			continue
+		}
+		id := uint8(len(m.imageIDs) + 1)
+		m.imageIDs[it.AssignmentID] = id
+		cmds = append(cmds, tea.Raw(Transmit(id, radicalCols, radicalRows, it.PNG)))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) startReviews() (tea.Model, tea.Cmd) {
@@ -371,7 +395,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.plan.Lessons) == 0 {
 			m.screen = lessonSummary
 		}
-		return m, nil
+		var items []review.Item
+		for _, l := range m.plan.Lessons {
+			items = append(items, l.Item)
+		}
+		return m.uploadImages(items)
 	case startedMsg:
 		m.inFlight--
 		if msg.run == m.run && errors.Is(msg.err, wanikani.ErrUnauthorized) {
@@ -528,7 +556,7 @@ func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 	if _, _, ok := m.session.Current(); !ok {
 		m.screen = summary
 	}
-	return m, nil
+	return m.uploadImages(msg.items)
 }
 
 func (m Model) enter() (tea.Model, tea.Cmd) {

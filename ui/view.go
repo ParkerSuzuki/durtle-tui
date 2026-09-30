@@ -134,7 +134,12 @@ func (m Model) itemBlock(item review.Item) string {
 	switch {
 	case item.Image != nil:
 		// The picture fills the block: 10 rows, no top or bottom padding.
-		shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
+		// Kitty draws the sharp PNG over placeholder cells; elsewhere half-blocks.
+		shown = strings.Join(halfBlocks(item.Image), "\n")
+		if id, ok := m.imageIDs[item.AssignmentID]; ok {
+			shown = Placeholders(id, radicalCols, radicalRows)
+		}
+		style = style.Padding(0, 4)
 	case m.fitScale(shown, w) > 0:
 		shown = " " // leave the row empty; bigCharsSeq draws on top
 	}
