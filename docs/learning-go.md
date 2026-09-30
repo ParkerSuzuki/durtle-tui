@@ -138,3 +138,53 @@ if/else-if chain. Cases do not fall through, so no `break` needed.
 structs: `review` should not know HTTP or JSON exists. It depends on nothing,
 so it can be tested alone, and the API shape can change without touching
 the grading code. Package `main` translates between the two (Task 7).
+
+## 4. Pointer receivers, optional values, and deterministic randomness
+
+Code: [review/session.go](../review/session.go), [review/session_test.go](../review/session_test.go)
+
+**Value vs pointer receivers.** `Item.HasReading` uses a value receiver
+`(it Item)`: it gets a copy and only reads. `Session` methods use
+`(s *Session)` because they *change* the session (advance `pos`, bump
+`wrong`). With a value receiver those changes would land on a copy and
+vanish. Rule of thumb: if any method needs a pointer, give them all
+pointers, so the type behaves consistently.
+
+**Constructors are just functions.** Go has no `new ClassName()`. By
+convention `NewSession(...)` builds and returns a `*Session`. `&Session{...}`
+takes the address of a fresh struct literal; Go's escape analysis puts it on
+the heap automatically because it outlives the function. There is no manual
+memory management and no difference in syntax.
+
+**`*Submission` as an optional value.** `Answer` returns `(Grade,
+*Submission)`: a nil pointer means "item not finished yet", non-nil means
+"send this". Returning `&sub` of a local variable is safe in Go (see above).
+The other common idiom is a third `ok bool` result, which `Current` uses.
+
+**Multiple return values** replace out-parameters and tuples:
+`it, part, ok := s.Current()`. `Current` also uses *named results*
+(`(it Item, p Part, ok bool)`), which document what each value means.
+
+**Arrays vs slices.** `wrong [2]int` is a fixed-size array (a value; copying
+the struct copies it), indexed by `Part` because `Meaning` is 0 and
+`Reading` is 1. Slices (`[]Part`) are growable views onto arrays.
+`s.parts = s.parts[1:]` "pops" the front by re-slicing, with no copying.
+
+**`slices.Clone`** (standard library `slices` package, Go 1.21+) copies the
+caller's slice before shuffling. A slice shares its backing array, so
+shuffling `items` directly would reorder the caller's data behind their back.
+
+**`math/rand/v2` and injected randomness.** `NewSession` takes a
+`*rand.Rand` instead of calling a global random function. Production passes
+a randomly seeded one; tests pass `rand.New(rand.NewPCG(seed, seed))`, so the
+"random" order is identical on every run and a failing test can be
+reproduced. This is dependency injection with no framework: just a
+parameter.
+
+**`for seed := range uint64(40)`** ranges over an integer (Go 1.22+):
+0 through 39, typed `uint64` to match what `NewPCG` wants.
+
+**`%+v` in test messages** prints struct field names
+(`{AssignmentID:1 IncorrectMeaning:1 IncorrectReading:0}`), which makes
+failures readable. Structs with only comparable fields can be compared
+with `==`, as `*sub != want` does.
