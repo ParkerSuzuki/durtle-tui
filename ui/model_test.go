@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
@@ -22,6 +23,12 @@ type fakeBackend struct {
 	loadErr   error
 	submitted []review.Submission
 	submitErr error
+	dash      dashboard.Dashboard
+	dashErr   error
+}
+
+func (f *fakeBackend) Dashboard(context.Context) (dashboard.Dashboard, error) {
+	return f.dash, f.dashErr
 }
 
 func (f *fakeBackend) Login(context.Context, string) error { return nil }
@@ -363,5 +370,220 @@ func TestSkippedRadicalsNoted(t *testing.T) {
 	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: nil, skipped: 2})
 	if got := m.View().Content; !strings.Contains(got, "2 radicals") || !strings.Contains(got, "rsvg-convert") {
 		t.Errorf("summary should say 2 radicals were skipped and why:\n%s", got)
+	}
+}
+
+var sampleDash = dashboard.Dashboard{Level: 12, Lessons: 5, Reviews: 67,
+	Forecast: []dashboard.Hour{{At: time.Date(2026, 9, 30, 15, 0, 0, 0, time.Local), Added: 12, Total: 79}},
+	Progress: dashboard.Progress{Radicals: 10, RadicalsPassed: 9, Kanji: 33, KanjiPassed: 21, KanjiNeeded: 30},
+	SRS:      dashboard.SRS{88, 143, 97, 201, 12}}
+
+func TestDashboardShowsPanels(t *testing.T) {
+	for _, width := range []int{100, 30} { // 30: narrow terminals must not panic
+		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
+		m, _ = step(t, m, dashboardMsg{d: sampleDash})
+		got := stripANSI(m.View().Content)
+		for _, want := range []string{"Level 12", "Lessons", "Reviews", "67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("width %d: dashboard missing %q", width, want)
+			}
+		}
+	}
+}
+
+func TestEmptyDashboard(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 80, Height: 40})
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Level: 1}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "none in the next 24 hours") {
+		t.Errorf("empty forecast not explained:\n%s", got)
+	}
+}
+
+func TestStartReviewsFromDashboard(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{Reviews: 0}})
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil || next.screen != home {
+		t.Errorf("r with nothing due: screen %v, cmd %v; want to stay on the dashboard", next.screen, cmd)
+	}
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Reviews: 1}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if m.screen != loading || cmd == nil {
+		t.Fatalf("r with reviews due: screen %v, cmd %v", m.screen, cmd)
+	}
+	m, _ = step(t, m, cmd())
+	if m.screen != reviewing {
+		t.Fatalf("screen = %v, want reviewing", m.screen)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if m.input.Value() != "r" {
+		t.Errorf("r during reviews must be typed, got %q", m.input.Value())
+	}
+}
+
+func TestSummaryReturnsToDashboard(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, dash: dashboard.Dashboard{Level: 3}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, submit := typeAndEnter(t, m, "ground") // summary, one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.screen != loading || cmd == nil {
+		t.Fatalf("Enter on summary: screen %v, cmd %v", m.screen, cmd)
+	}
+	m, _ = step(t, m, cmd())
+	if m.screen != home || m.dash.Level != 3 {
+		t.Fatalf("screen %v, level %d; want the dashboard", m.screen, m.dash.Level)
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd != nil || !m.quitting {
+		t.Fatal("q with a submit in flight must wait for it")
+	}
+	if _, cmd = step(t, m, submit()); cmd == nil {
+		t.Fatal("expected quit once the submit finished")
+	}
+}
+
+// No dashboard line may be wider than the terminal once there is room for it.
+func TestDashboardFitsWidth(t *testing.T) {
+	for _, width := range []int{80, 100, 140} {
+		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
+		m, _ = step(t, m, dashboardMsg{d: sampleDash})
+		for _, line := range strings.Split(m.View().Content, "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width %d: line is %d cells: %q", width, w, stripANSI(line))
+			}
+		}
+	}
+}
+
+// Left open, the dashboard reloads itself when the next forecast hour
+// arrives, without leaving the home screen. Stale timers do nothing.
+func TestDashboardRefreshesAtNextForecastHour(t *testing.T) {
+	next := time.Now().Add(time.Hour).Truncate(time.Hour)
+	fb := &fakeBackend{dash: dashboard.Dashboard{Level: 4}}
+	m, cmd := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{Level: 3,
+		Forecast: []dashboard.Hour{{At: next, Added: 5, Total: 5}}}})
+	if cmd == nil || !m.refreshAt.Equal(next.Add(refreshSlack)) {
+		t.Fatalf("refresh not scheduled: cmd %v, refreshAt %v", cmd, m.refreshAt)
+	}
+	if _, stale := step(t, m, refreshMsg{at: next.Add(-time.Hour)}); stale != nil {
+		t.Error("an outdated refresh timer must not reload")
+	}
+	m, cmd = step(t, m, refreshMsg{at: m.refreshAt})
+	if cmd == nil || m.screen != home {
+		t.Fatalf("refresh: cmd %v, screen %v; want a background reload on the dashboard", cmd, m.screen)
+	}
+	if m, _ = step(t, m, cmd()); m.dash.Level != 4 {
+		t.Errorf("dashboard not reloaded: level %d", m.dash.Level)
+	}
+}
+
+// A new session must redraw the big glyph even when its first item matches
+// the last one drawn in the previous session.
+func TestNewSessionRedrawsBigChars(t *testing.T) {
+	m := bigModel(t, ground)
+	m, _ = typeAndEnter(t, m, "ground") // session over
+	if _, cmd := step(t, m, loadedMsg{items: []review.Item{ground}}); !schedulesBigRedraw(cmd) {
+		t.Error("the next session's first item was not drawn")
+	}
+}
+
+// While waiting to quit, the dashboard ignores keys: starting a session
+// then would let the pending quit cut it off.
+func TestQuittingIgnoresStartReviews(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, dash: dashboard.Dashboard{Reviews: 1}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = step(t, m, cmd()) // dashboard
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if m, cmd = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil || m.screen != home {
+		t.Errorf("r while quitting: screen %v, cmd %v; want it ignored", m.screen, cmd)
+	}
+}
+
+// The counts sit in colored tiles. Without kitty they are in the view on
+// tileNumberRow; with kitty the view leaves them out and they are drawn at 3x.
+func TestCountTiles(t *testing.T) {
+	plain, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 100, Height: 40})
+	plain, _ = step(t, plain, dashboardMsg{d: sampleDash})
+	lines := strings.Split(stripANSI(plain.View().Content), "\n")
+	if got := lineIndex(lines, "67") + 1; got != tileNumberRow {
+		t.Errorf("review count on row %d, want tileNumberRow %d", got, tileNumberRow)
+	}
+	if lineIndex(lines, "Lessons") < 0 || lineIndex(lines, "Reviews") < 0 {
+		t.Error("tile labels missing")
+	}
+
+	big, _ := step(t, New(&fakeBackend{}, true), tea.WindowSizeMsg{Width: 100, Height: 40})
+	big, cmd := step(t, big, dashboardMsg{d: sampleDash})
+	if !schedulesBigRedraw(cmd) {
+		t.Error("the dashboard must draw its big counts")
+	}
+	if strings.Contains(stripANSI(big.View().Content), "67") {
+		t.Error("with big text on, the view must leave the count row empty")
+	}
+	seq := big.bigCharsSeq()
+	for _, want := range []string{"\x1b]66;s=3;5\x07", "\x1b]66;s=3;67\x07"} {
+		if !strings.Contains(seq, want) {
+			t.Errorf("missing %q in %q", want, seq)
+		}
+	}
+	if want := fmt.Sprintf("\x1b[%d;", tileNumberRow-1); !strings.Contains(seq, want) {
+		t.Errorf("big counts not placed at row %d: %q", tileNumberRow-1, seq)
+	}
+}
+
+// :q and :wq leave a session for the dashboard, from either answer box, and
+// never submit the half-answered item.
+func TestVimQuitToDashboard(t *testing.T) {
+	woman := review.Item{AssignmentID: 3, Type: "vocabulary", Characters: "女",
+		Meanings: []string{"Woman"}, Readings: []string{"おんな"}}
+	for _, cmdText := range []string{":q", ":wq"} {
+		fb := &fakeBackend{items: []review.Item{woman}, dash: dashboard.Dashboard{Level: 7}}
+		m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+		if _, part, _ := m.session.Current(); part == review.Meaning {
+			m, _ = typeAndEnter(t, m, "woman") // half-answered: reading still to go
+		}
+		for _, k := range cmdText { // typed key by key, through the kana conversion
+			m, _ = step(t, m, tea.KeyPressMsg{Code: k, Text: string(k)})
+		}
+		m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		if m.screen != loading || cmd == nil {
+			t.Fatalf("%s: screen %v, cmd %v; want to load the dashboard", cmdText, m.screen, cmd)
+		}
+		if m, _ = step(t, m, cmd()); m.screen != home || m.dash.Level != 7 {
+			t.Errorf("%s: screen %v; want the dashboard", cmdText, m.screen)
+		}
+		if len(fb.submitted) != 0 {
+			t.Errorf("%s: the half-answered item was submitted: %+v", cmdText, fb.submitted)
+		}
+	}
+}
+
+// Anything but exactly :q or :wq is an answer.
+func TestNotQuiteVimQuitIsAnAnswer(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	m, _ = typeAndEnter(t, m, ":qq")
+	if m.screen != reviewing || !m.showingAnswer {
+		t.Errorf("\":qq\" should be graded as a wrong answer; screen %v", m.screen)
+	}
+}
+
+func TestReviewShowsQuitHint(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, ":q dashboard") {
+		t.Errorf("review screen has no :q hint:\n%s", got)
+	}
+}
+
+func TestFailedScreenSaysWhatFailed(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), dashboardMsg{err: errors.New("boom")})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Could not sync") {
+		t.Errorf("dashboard failure should say sync failed:\n%s", got)
+	}
+}
+
+func TestProgressBarShowsAnyProgress(t *testing.T) {
+	if got := stripANSI(progressBar(1, 32, 20, "#E9A23B")); !strings.HasPrefix(got, "█") {
+		t.Errorf("1 of 32 drew no filled cell: %q", got)
 	}
 }

@@ -24,6 +24,8 @@ type Subject struct {
 	AuxiliaryMeanings []AuxMeaning     `json:"auxiliary_meanings"`
 	Readings          []Reading        `json:"readings"`
 	CharacterImages   []CharacterImage `json:"character_images"` // for radicals with no characters
+	Level             int              `json:"level"`
+	HiddenAt          *time.Time       `json:"hidden_at"`
 }
 
 type CharacterImage struct {
@@ -50,8 +52,23 @@ type Reading struct {
 }
 
 type Assignment struct {
-	SubjectID   int    `json:"subject_id"`
-	SubjectType string `json:"subject_type"`
+	SubjectID   int        `json:"subject_id"`
+	SubjectType string     `json:"subject_type"`
+	SRSStage    int        `json:"srs_stage"` // 0 lesson not done, 1-4 apprentice, 5-6 guru, 7 master, 8 enlightened, 9 burned
+	StartedAt   *time.Time `json:"started_at"`
+	PassedAt    *time.Time `json:"passed_at"`
+	Hidden      bool       `json:"hidden"`
+}
+
+// Summary is what is available now and over the next day, grouped by hour.
+type Summary struct {
+	Lessons []SummaryEntry `json:"lessons"`
+	Reviews []SummaryEntry `json:"reviews"`
+}
+
+type SummaryEntry struct {
+	AvailableAt time.Time `json:"available_at"`
+	SubjectIDs  []int     `json:"subject_ids"`
 }
 
 type StudyMaterial struct {

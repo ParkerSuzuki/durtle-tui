@@ -2,7 +2,7 @@
 
 Deferred work. Each item gets its own design discussion before work starts.
 
-Milestone 2: dashboard (in design).
+Milestone 2: dashboard (done).
 Milestone 3 candidates: lessons, or review polish (audio, undo, wrap-up, the review-finding minors below).
 
 - [ ] Sharper radical images in kitty via the graphics protocol (half-block art works everywhere; decision 20).
@@ -22,3 +22,8 @@ From the milestone 1 review (deferred minors):
 - [ ] flushPending: on a mid-run 401, drop the entries already sent before returning.
 - [ ] Romaji gaps: shimbun (m before b/p/m), vu, dya/dyu, xtsu, wi.
 - [ ] Spec wording: typo tolerance uses the accepted meaning's length, not the typed answer's.
+
+From the milestone 2 review (deferred minors):
+- [ ] A submit landing after the next session starts counts toward the new session's summary (cosmetic).
+- [ ] Below about 60 columns the kanji progress line wraps; drop the counts suffix on narrow terminals.
+- [ ] Incremental sync uses the local clock for updated_after (clock skew can skip updates); use the response's data_updated_at.

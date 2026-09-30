@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 )
 
@@ -47,8 +48,14 @@ func (m Model) View() tea.View {
 		body = m.reviewView()
 	case summary:
 		body = m.summaryView()
+	case home:
+		body = m.homeView()
 	case failed:
-		body = fmt.Sprintf("Could not load reviews:\n\n%v\n\n%s", m.err, dim.Render("Enter to retry, Esc to quit"))
+		what := "sync with WaniKani"
+		if m.loadingReviews {
+			what = "load reviews"
+		}
+		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
 	if m.quitting {
 		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting...", m.inFlight))
@@ -94,7 +101,7 @@ func (m Model) reviewView() string {
 		case item.Image != nil:
 			// The picture fills the block: 10 rows, no top or bottom padding.
 			shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
-		case m.bigScale(shown) > 0:
+		case m.fitScale(shown, w) > 0:
 			shown = " " // leave the row empty; bigCharsSeq draws on top
 		}
 		chars = style.Width(w).Align(lipgloss.Center).Render(shown)
@@ -110,67 +117,96 @@ func (m Model) reviewView() string {
 		m.answerView(),
 		"",
 		m.feedback,
+		"",
+		dim.Render(":q dashboard   esc quit"),
 	}, "\n")
 }
 
-// bigScale is the largest kitty text scale (3, then 2) at which chars fit
-// in the block, or 0 to draw them at normal size.
-func (m Model) bigScale(chars string) int {
-	if !m.bigText || chars == "" { // "" is an image-only radical
+// bigGlyph is text kitty draws at scale over a colored area that the view
+// left empty (see bigCharsSeq).
+type bigGlyph struct {
+	row         int // 1-based terminal row of the glyph's top
+	left, width int // 1-based column and width of the colored area
+	scale       int
+	text, bg    string
+}
+
+// fitScale is the largest kitty text scale (3, then 2) at which text fits in
+// width cells with a little margin, or 0 to draw it at normal size.
+func (m Model) fitScale(text string, width int) int {
+	if !m.bigText || text == "" { // "" is an image-only radical
 		return 0
 	}
 	for _, s := range []int{3, 2} {
-		if lipgloss.Width(chars)*s <= m.innerWidth()-4 {
+		if lipgloss.Width(text)*s <= width-4 {
 			return s
 		}
 	}
 	return 0
 }
 
-// bigKey identifies what the character block shows. The big glyph only
-// needs redrawing when this changes: a new item, a resize, or a new screen.
-func (m Model) bigKey() string {
-	if m.screen != reviewing {
-		return ""
+// bigGlyphs lists what the current screen wants drawn large: the review
+// characters, or the dashboard's two counts.
+func (m Model) bigGlyphs() []bigGlyph {
+	w := m.innerWidth()
+	switch m.screen {
+	case reviewing:
+		item, _, ok := m.session.Current()
+		if !ok {
+			return nil
+		}
+		if s := m.fitScale(item.Characters, w); s > 0 {
+			return []bigGlyph{{row: charRow - (s-1)/2, left: pagePadding + 1, width: w,
+				scale: s, text: item.Characters, bg: typeColors[item.Type]}}
+		}
+	case home:
+		tw := tileWidth(w)
+		var gs []bigGlyph
+		for i, t := range m.tiles() {
+			if s := m.fitScale(t.count, tw); s > 0 {
+				gs = append(gs, bigGlyph{row: tileNumberRow - (s-1)/2, left: pagePadding + 1 + i*(tw+tileGap),
+					width: tw, scale: s, text: t.count, bg: t.color})
+			}
+		}
+		return gs
 	}
-	it, _, ok := m.session.Current()
-	if !ok {
-		return ""
-	}
-	return fmt.Sprintf("%d|%s|%d", it.AssignmentID, it.Characters, m.width)
+	return nil
 }
 
-// bigCharsSeq returns the raw escape sequence that draws the current
-// characters at kitty text scale over the empty block row, or "" when big
-// text does not apply. It saves the cursor, repaints the rows the glyph
-// covers with the block color (so a shorter word leaves no ghosts), writes
-// the scaled text with OSC 66, and restores the cursor.
+// bigKey identifies what is drawn large. The glyphs only need redrawing
+// when this changes: a new item, new counts, a resize, or a new screen.
+func (m Model) bigKey() string {
+	gs := m.bigGlyphs()
+	if len(gs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%v", gs)
+}
+
+// bigCharsSeq returns the raw escape sequence that draws bigGlyphs, or ""
+// when there are none. It saves the cursor; for each glyph repaints the rows
+// it covers with the area's color (so a shorter text leaves no ghosts) and
+// writes the scaled text with OSC 66; then restores the cursor.
 // Protocol: https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
 func (m Model) bigCharsSeq() string {
-	if m.screen != reviewing {
-		return "" // a late redraw after the session ended, or before it began
+	gs := m.bigGlyphs()
+	if len(gs) == 0 {
+		return "" // not a screen with big text, or nothing fits
 	}
-	item, _, ok := m.session.Current()
-	if !ok {
-		return ""
-	}
-	s := m.bigScale(item.Characters)
-	if s == 0 {
-		return ""
-	}
-	var r, g, b uint8
-	fmt.Sscanf(typeColors[item.Type], "#%02x%02x%02x", &r, &g, &b)
-	bg := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
-	w := m.innerWidth()
-	top := charRow - (s-1)/2
 	var sb strings.Builder
 	sb.WriteString("\x1b7")
-	for row := top; row < top+s; row++ {
-		fmt.Fprintf(&sb, "\x1b[%d;%dH%s%s", row, pagePadding+1, bg, strings.Repeat(" ", w))
+	for _, g := range gs {
+		var r, gr, b uint8
+		fmt.Sscanf(g.bg, "#%02x%02x%02x", &r, &gr, &b)
+		bg := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, gr, b)
+		for row := g.row; row < g.row+g.scale; row++ {
+			fmt.Fprintf(&sb, "\x1b[%d;%dH%s%s", row, g.left, bg, strings.Repeat(" ", g.width))
+		}
+		col := g.left + (g.width-lipgloss.Width(g.text)*g.scale)/2
+		fmt.Fprintf(&sb, "\x1b[%d;%dH%s\x1b[1;38;2;255;255;255m\x1b]66;s=%d;%s\x07\x1b[0m",
+			g.row, col, bg, g.scale, g.text)
 	}
-	col := pagePadding + (w-lipgloss.Width(item.Characters)*s)/2 + 1
-	fmt.Fprintf(&sb, "\x1b[%d;%dH%s\x1b[1;38;2;255;255;255m\x1b]66;s=%d;%s\x07\x1b[0m\x1b8",
-		top, col, bg, s, item.Characters)
+	sb.WriteString("\x1b8")
 	return sb.String()
 }
 
@@ -248,7 +284,7 @@ func (m Model) summaryView() string {
 	if m.lost > 0 {
 		lines = append(lines, fmt.Sprintf("%d could not be sent or saved (%v). Redo them on the website.", m.lost, m.lostErr))
 	}
-	lines = append(lines, "", dim.Render("Enter or Esc to quit"))
+	lines = append(lines, "", dim.Render("Enter for the dashboard, Esc to quit"))
 	return strings.Join(lines, "\n")
 }
 
@@ -273,4 +309,132 @@ func percentCorrect(results []review.Result) string {
 		}
 	}
 	return fmt.Sprintf("%d%%", clean*100/len(results))
+}
+
+const (
+	srsColor        = "#A8DADC"
+	maxForecastRows = 8
+	tileGap         = 2
+	// tileRow is the 1-based terminal row where the count tiles start: the
+	// page's top padding, the title line, a blank line.
+	tileRow = 1 + 1 + 1 + 1
+	// tileNumberRow is the row a count sits on: below the label and a blank
+	// row, in the middle of the tile's three lower rows.
+	tileNumberRow = tileRow + 3
+)
+
+func (m Model) homeView() string {
+	d, p := m.dash, m.dash.Progress
+	// The kanji line is the widest: an 18-cell label, the bar, and up to 37
+	// cells of counts ("  123 / 456   (411 needed to level up)").
+	barW := max(m.innerWidth()-(18+1+37), 5)
+	lines := []string{
+		title.Render("durtle-tui") + dim.Render(fmt.Sprintf("   Level %d", d.Level)),
+		"",
+		m.tilesView(),
+		"",
+		fmt.Sprintf("%-18s %s  %d / %d   (%d needed to level up)", fmt.Sprintf("Level %d kanji", d.Level),
+			progressBar(p.KanjiPassed, p.Kanji, barW, typeColors["kanji"]), p.KanjiPassed, p.Kanji, p.KanjiNeeded),
+		fmt.Sprintf("%-18s %s  %d / %d", fmt.Sprintf("Level %d radicals", d.Level),
+			progressBar(p.RadicalsPassed, p.Radicals, barW, typeColors["radical"]), p.RadicalsPassed, p.Radicals),
+		"",
+		"Upcoming reviews",
+	}
+	lines = append(lines, forecastLines(d.Forecast, barW)...)
+	lines = append(lines, "")
+	lines = append(lines, srsLines(d.SRS, barW)...)
+	hint := "q quit"
+	if d.Reviews > 0 {
+		hint = "r start reviews   q quit"
+	}
+	lines = append(lines, "", dim.Render(hint))
+	return strings.Join(lines, "\n")
+}
+
+// tile is one of the dashboard's count tiles.
+type tile struct{ label, count, color string }
+
+func (m Model) tiles() []tile {
+	return []tile{
+		{"Lessons", fmt.Sprint(m.dash.Lessons), typeColors["radical"]},
+		{"Reviews", fmt.Sprint(m.dash.Reviews), typeColors["kanji"]},
+	}
+}
+
+// tileWidth splits the inner width between two tiles and the gap.
+func tileWidth(inner int) int { return max((inner-tileGap)/2, 8) }
+
+// tilesView draws the Lessons and Reviews tiles side by side: label on top,
+// count on tileNumberRow. With kitty big text the count row is left empty
+// and bigCharsSeq draws the count over it.
+func (m Model) tilesView() string {
+	tw := tileWidth(m.innerWidth())
+	var parts []string
+	for i, t := range m.tiles() {
+		count := t.count
+		if m.fitScale(count, tw) > 0 {
+			count = " "
+		}
+		body := strings.Join([]string{t.label, "", "", count, "", ""}, "\n")
+		if i > 0 {
+			parts = append(parts, strings.Repeat(" ", tileGap))
+		}
+		parts = append(parts, lipgloss.NewStyle().Bold(true).Width(tw).Align(lipgloss.Center).
+			Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color(t.color)).Render(body))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+// progressBar draws done out of total as width cells: filled in color, the rest dim.
+func progressBar(done, total, width int, color string) string {
+	filled := 0
+	if total > 0 {
+		filled = min(done*width/total, width)
+	}
+	if done > 0 {
+		filled = max(filled, 1) // any progress shows
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) +
+		dim.Render(strings.Repeat("░", width-filled))
+}
+
+// scaledBar draws n as a bar where most fills width; any n > 0 gets at least one cell.
+func scaledBar(n, most, width int) string {
+	cells := 0
+	if most > 0 {
+		cells = n * width / most
+	}
+	if n > 0 {
+		cells = max(cells, 1)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(srsColor)).Render(strings.Repeat("█", cells))
+}
+
+func forecastLines(hours []dashboard.Hour, width int) []string {
+	if len(hours) == 0 {
+		return []string{dim.Render("  none in the next 24 hours")}
+	}
+	hours = hours[:min(len(hours), maxForecastRows)]
+	most := 0
+	for _, h := range hours {
+		most = max(most, h.Added)
+	}
+	var lines []string
+	for _, h := range hours {
+		lines = append(lines, fmt.Sprintf("  %-9s %+5d %5d  %s",
+			h.At.Local().Format("Mon 15:04"), h.Added, h.Total, scaledBar(h.Added, most, width)))
+	}
+	return lines
+}
+
+func srsLines(srs dashboard.SRS, width int) []string {
+	most := 0
+	for _, n := range srs {
+		most = max(most, n)
+	}
+	var lines []string
+	for i, n := range srs {
+		lines = append(lines, fmt.Sprintf("%-12s %5d  %s", dashboard.StageNames[i], n, scaledBar(n, most, width)))
+	}
+	return lines
 }

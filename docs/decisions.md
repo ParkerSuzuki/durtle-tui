@@ -201,3 +201,17 @@ grant, longer).
 **Decision:** durtle-tui opens on the dashboard. `r` or Enter starts reviews when any are available; the summary's Enter returns to a refreshed dashboard; `q` or Esc quits from the dashboard.
 **Why:** It is how the website works and makes durtle-tui a place to check in, not only a review runner.
 **Passed on:** A separate `durtle-tui dash` command (two entry points to remember).
+
+## 23. Count tiles on the dashboard, big digits in kitty (2026-09-30)
+
+**Context:** The user wanted the Lessons and Reviews counts bigger.
+**Decision:** Two colored tiles side by side (Lessons teal `#2A9D8F`, Reviews amber `#E9A23B`, reusing the radical and kanji colors), each 6 rows with the label on top. In kitty the counts are drawn at 3x (2x or normal if they do not fit) with the same delayed OSC 66 overlay as the review kanji; elsewhere they show at normal size in the tile.
+**Why:** Tiles make the counts the first thing you see in any terminal, including herdr; kitty users get the big digits the review screen already has. The overlay code was generalized into a list of `bigGlyph`s per screen, so the review kanji and the counts share one drawing routine.
+**Passed on:** Tiles only (no big digits); digits drawn from block characters (big everywhere, but a hand-made 5-row font to maintain).
+
+## 24. :q and :wq leave reviews for the dashboard (2026-09-30)
+
+**Context:** The user wanted a key-driven way back to the dashboard mid-session, in vim style out of habit.
+**Decision:** Typing exactly `:q` or `:wq` in the answer box and pressing Enter ends the session and reloads the dashboard. Both mean the same thing: finished items are already submitted as you go; the item in progress is not submitted and stays due. Esc still quits the app. A dim hint line on the review screen shows both.
+**Why:** No answer can be `:q`, so reusing the answer box needs no extra mode or key, and the romaji-to-kana conversion leaves both commands untouched.
+**Passed on:** A single hotkey (every printable key is a possible answer character); making `:q` quit the app (Esc already does).

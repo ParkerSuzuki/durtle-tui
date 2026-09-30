@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/store"
@@ -210,5 +212,65 @@ func TestBuildItemsImageRadicals(t *testing.T) {
 	items, skipped = buildItems(assignments, subjects, nil, func(wanikani.Resource[wanikani.Subject]) image.Image { return nil })
 	if len(items) != 0 || skipped != 1 {
 		t.Errorf("without an image: %d items, skipped %d; want 0 and 1", len(items), skipped)
+	}
+}
+
+func TestDashboard(t *testing.T) {
+	var assignmentQueries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"level":1}}`)
+	})
+	mux.HandleFunc("/summary", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"data":{"lessons":[],"reviews":[{"available_at":%q,"subject_ids":[1]}]}}`,
+			time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	})
+	mux.HandleFunc("/subjects", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data":{"level":1,"characters":"一"}}]}`)
+	})
+	mux.HandleFunc("/assignments", func(w http.ResponseWriter, r *http.Request) {
+		assignmentQueries = append(assignmentQueries, r.URL.RawQuery)
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+
+	d, err := b.Dashboard(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Level != 1 || d.Reviews != 1 || d.Progress.KanjiPassed != 1 || d.SRS[1] != 1 {
+		t.Errorf("dashboard = %+v", d)
+	}
+	if _, err := b.Dashboard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(assignmentQueries) != 2 || strings.Contains(assignmentQueries[0], "updated_after") ||
+		!strings.Contains(assignmentQueries[1], "updated_after") {
+		t.Errorf("assignment requests = %q; want a full sync, then an incremental one", assignmentQueries)
+	}
+}
+
+// An assignment cache from another format version is refetched in full.
+func TestOldAssignmentCacheForcesFullSync(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`{"pages":{"next_url":null},"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	old := map[string]any{"version": 0, "synced_at": "2026-09-01T00:00:00Z", "items": map[string]any{}}
+	if err := store.WriteJSON(filepath.Join(b.dir, "assignments.json"), old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.syncAssignments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(gotQuery, "updated_after") {
+		t.Errorf("old cache synced incrementally (%q); want a full sync", gotQuery)
 	}
 }

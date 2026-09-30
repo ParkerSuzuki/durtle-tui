@@ -70,3 +70,45 @@ func TestSubmitReviewBody(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSummary(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/summary" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"object":"report","data":{"lessons":[{"available_at":"2026-09-30T16:00:00.000000Z","subject_ids":[1,2]}],"reviews":[{"available_at":"2026-09-30T16:00:00.000000Z","subject_ids":[3]},{"available_at":"2026-09-30T17:00:00.000000Z","subject_ids":[]}]}}`)
+	})
+	s, err := c.Summary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Lessons) != 1 || len(s.Lessons[0].SubjectIDs) != 2 || len(s.Reviews) != 2 || s.Reviews[0].SubjectIDs[0] != 3 {
+		t.Errorf("got %+v", s)
+	}
+}
+
+func TestAssignmentsSince(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/assignments" || r.URL.Query().Get("updated_after") == "" {
+			t.Errorf("request = %s", r.URL)
+		}
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":5,"object":"assignment","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-02-01T00:00:00Z","hidden":false}}]}`)
+	})
+	got, err := c.Assignments(context.Background(), time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if a := got[0].Data; a.SRSStage != 5 || a.StartedAt == nil || a.PassedAt == nil {
+		t.Errorf("decoded %+v", a)
+	}
+}
+
+func TestSubjectLevelAndHidden(t *testing.T) {
+	var s Subject
+	if err := json.Unmarshal([]byte(`{"level":12,"hidden_at":"2026-01-01T00:00:00Z"}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Level != 12 || s.HiddenAt == nil {
+		t.Errorf("decoded %+v", s)
+	}
+}
