@@ -32,9 +32,9 @@ type backend struct {
 
 // Cache versions change whenever the cached type gains fields, so an older
 // cache (which never stored them) is refetched in full. Subjects went to 3
-// for level and hidden_at.
+// for level and hidden_at, and 4 for the teaching fields.
 const (
-	subjectCacheVersion    = 3
+	subjectCacheVersion    = 4
 	assignmentCacheVersion = 1
 )
 

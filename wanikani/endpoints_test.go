@@ -112,3 +112,36 @@ func TestSubjectLevelAndHidden(t *testing.T) {
 		t.Errorf("decoded %+v", s)
 	}
 }
+
+func TestStartAssignment(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/assignments/42/start" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["assignment"] == nil {
+			t.Errorf("body = %v, %v", body, err)
+		}
+		fmt.Fprint(w, `{}`)
+	})
+	if err := c.StartAssignment(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubjectTeachingFields(t *testing.T) {
+	var s Subject
+	err := json.Unmarshal([]byte(`{"meaning_mnemonic":"m","meaning_hint":null,"reading_mnemonic":"r","reading_hint":"h",
+		"context_sentences":[{"en":"Adult.","ja":"大人です。"}],"parts_of_speech":["noun"],"component_subject_ids":[1,2]}`), &s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MeaningMnemonic != "m" || s.MeaningHint != "" || s.ReadingHint != "h" || s.ContextSentences[0].Ja != "大人です。" ||
+		s.PartsOfSpeech[0] != "noun" || len(s.ComponentSubjectIDs) != 2 {
+		t.Errorf("decoded %+v", s)
+	}
+	var u User
+	if err := json.Unmarshal([]byte(`{"level":3,"preferences":{"lessons_batch_size":4}}`), &u); err != nil || u.Preferences.LessonsBatchSize != 4 {
+		t.Errorf("user %+v, %v", u, err)
+	}
+}
