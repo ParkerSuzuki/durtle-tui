@@ -31,6 +31,7 @@ var StageNames = [5]string{"Apprentice", "Guru", "Master", "Enlightened", "Burne
 // Dashboard is everything the home screen shows.
 type Dashboard struct {
 	Level, Lessons, Reviews int
+	LessonsToday            int // lessons the daily cap still allows now (set by the backend)
 	Forecast                []Hour
 	Progress                Progress
 	SRS                     SRS

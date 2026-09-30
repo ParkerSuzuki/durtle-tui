@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/store"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
@@ -216,6 +217,7 @@ func TestBuildItemsImageRadicals(t *testing.T) {
 }
 
 func TestDashboard(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // Dashboard writes settings.json
 	var assignmentQueries []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
@@ -272,5 +274,112 @@ func TestOldAssignmentCacheForcesFullSync(t *testing.T) {
 	}
 	if strings.Contains(gotQuery, "updated_after") {
 		t.Errorf("old cache synced incrementally (%q); want a full sync", gotQuery)
+	}
+}
+
+// lessonServer serves one radical, one kanji built from it, one vocabulary
+// word, and one image-only radical, all available as lessons now.
+func lessonServer(t *testing.T, startedToday bool) *backend {
+	t.Helper()
+	started := `null`
+	if startedToday {
+		started = fmt.Sprintf("%q", time.Now().UTC().Format(time.RFC3339))
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"level":1,"preferences":{"lessons_batch_size":4}}}`)
+	})
+	mux.HandleFunc("/summary", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"data":{"lessons":[{"available_at":%q,"subject_ids":[3,2,1,4]}],"reviews":[]}}`,
+			time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	})
+	mux.HandleFunc("/subjects", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[
+			{"id":1,"object":"radical","data":{"level":1,"characters":"一","meanings":[{"meaning":"Ground","primary":true,"accepted_answer":true}],"meaning_mnemonic":"a <radical>line</radical>"}},
+			{"id":2,"object":"kanji","data":{"level":1,"characters":"二","component_subject_ids":[1],
+				"meanings":[{"meaning":"Two","primary":true,"accepted_answer":true}],
+				"readings":[{"reading":"に","primary":true,"accepted_answer":true,"type":"onyomi"},{"reading":"ふた","accepted_answer":false,"type":"kunyomi"}]}},
+			{"id":3,"object":"vocabulary","data":{"level":1,"characters":"二つ","component_subject_ids":[2],"parts_of_speech":["numeral"],
+				"meanings":[{"meaning":"Two Things","primary":true,"accepted_answer":true}],
+				"readings":[{"reading":"ふたつ","primary":true,"accepted_answer":true}],
+				"context_sentences":[{"en":"a","ja":"あ"},{"en":"b","ja":"い"},{"en":"c","ja":"う"},{"en":"d","ja":"え"}]}},
+			{"id":4,"object":"radical","data":{"level":1,"characters":null,"meanings":[{"meaning":"Beggar","primary":true,"accepted_answer":true}]}},
+			{"id":5,"object":"kanji","data":{"level":1,"characters":"三"}}]}`)
+	})
+	mux.HandleFunc("/assignments", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[
+			{"id":10,"object":"assignment","data":{"subject_id":1}},
+			{"id":20,"object":"assignment","data":{"subject_id":2}},
+			{"id":30,"object":"assignment","data":{"subject_id":3}},
+			{"id":40,"object":"assignment","data":{"subject_id":4}},
+			{"id":50,"object":"assignment","data":{"subject_id":5,"srs_stage":1,"started_at":%s}}]}`, started)
+	})
+	mux.HandleFunc("/study_materials", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	return b
+}
+
+func TestLessons(t *testing.T) {
+	b := lessonServer(t, false)
+	plan, err := b.Lessons(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.BatchSize != 4 {
+		t.Errorf("batch size %d, want 4 from the WaniKani preference", plan.BatchSize)
+	}
+	var chars []string
+	for _, l := range plan.Lessons {
+		chars = append(chars, l.Characters)
+	}
+	// The image-only radical has no art here (no image URL), so it is skipped.
+	if strings.Join(chars, ",") != "一,二,二つ" {
+		t.Fatalf("lessons = %v, want 一,二,二つ", chars)
+	}
+	kanji, vocab := plan.Lessons[1], plan.Lessons[2]
+	if len(kanji.KanjiReadings) != 2 || len(kanji.Components) != 1 || kanji.Components[0].Meaning != "Ground" {
+		t.Errorf("kanji lesson = %+v", kanji)
+	}
+	if len(vocab.Sentences) != 3 || vocab.PartsOfSpeech[0] != "numeral" || plan.Lessons[0].MeaningMnemonic == "" {
+		t.Errorf("vocab lesson = %+v", vocab)
+	}
+	if s, err := b.Settings(); err != nil || s.BatchSize != 4 || s.DailyCap != 10 {
+		t.Errorf("settings.json not written with defaults: %+v, %v", s, err)
+	}
+}
+
+func TestLessonsCapCountsToday(t *testing.T) {
+	b := lessonServer(t, true) // one lesson (subject 5) already started today
+	if err := b.SaveSettings(lessons.Settings{DailyCap: 2, Order: lessons.Classic,
+		Types: lessons.Types{Radical: true, Kanji: true, Vocabulary: true}, BatchSize: 3}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := b.Lessons(context.Background())
+	if err != nil || len(plan.Lessons) != 1 {
+		t.Fatalf("got %d lessons (%v); cap 2 minus 1 started today leaves 1", len(plan.Lessons), err)
+	}
+	d, err := b.Dashboard(context.Background())
+	if err != nil || d.LessonsToday != 1 || d.Lessons != 4 {
+		t.Errorf("dashboard lessons today %d of %d (%v), want 1 of 4", d.LessonsToday, d.Lessons, err)
+	}
+}
+
+func TestStartLesson(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.Method + " " + r.URL.Path
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	if err := b.StartLesson(context.Background(), 7); err != nil || path != "PUT /assignments/7/start" {
+		t.Errorf("StartLesson: %q, %v", path, err)
 	}
 }
