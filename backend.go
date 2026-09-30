@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/store"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
@@ -29,23 +30,73 @@ type backend struct {
 	mu     sync.Mutex // guards pending.json; submits run concurrently
 }
 
-// subjectCacheVersion changes whenever wanikani.Subject gains fields, so an
-// older cache (which never stored them) is refetched in full.
-const subjectCacheVersion = 2
+// Cache versions change whenever the cached type gains fields, so an older
+// cache (which never stored them) is refetched in full. Subjects went to 3
+// for level and hidden_at.
+const (
+	subjectCacheVersion    = 3
+	assignmentCacheVersion = 1
+)
 
 // radicalArtPx is the size radical images are rasterized to: 20 columns by
 // 10 rows of half-block characters.
 const radicalArtPx = 20
 
-type subjectCache struct {
-	Version  int                                         `json:"version"`
-	SyncedAt time.Time                                   `json:"synced_at"`
-	Subjects map[int]wanikani.Resource[wanikani.Subject] `json:"subjects"`
+// resourceCache is the on-disk form of a synced collection.
+type resourceCache[T any] struct {
+	Version  int                          `json:"version"`
+	SyncedAt time.Time                    `json:"synced_at"`
+	Items    map[int]wanikani.Resource[T] `json:"items"`
 }
 
 type synonymCache struct {
 	SyncedAt time.Time        `json:"synced_at"`
 	Synonyms map[int][]string `json:"synonyms"` // by subject ID
+}
+
+// connect makes sure there is a client, loading the saved token if needed.
+func (b *backend) connect() error {
+	if b.client != nil {
+		return nil
+	}
+	tok, err := store.LoadToken()
+	if errors.Is(err, store.ErrNoToken) {
+		return wanikani.ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	b.client = wanikani.NewClient(b.base, tok)
+	return nil
+}
+
+// Dashboard sends any saved answers, syncs subjects and assignments, and
+// computes the home screen.
+func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
+	var none dashboard.Dashboard
+	if err := b.connect(); err != nil {
+		return none, err
+	}
+	if err := b.flushPending(ctx); err != nil {
+		return none, err
+	}
+	subjects, err := b.syncSubjects(ctx)
+	if err != nil {
+		return none, err
+	}
+	assignments, err := b.syncAssignments(ctx)
+	if err != nil {
+		return none, err
+	}
+	user, err := b.client.User(ctx)
+	if err != nil {
+		return none, err
+	}
+	sum, err := b.client.Summary(ctx)
+	if err != nil {
+		return none, err
+	}
+	return dashboard.Build(time.Now(), user.Level, sum, assignments, subjects), nil
 }
 
 // Login checks the token against the API and saves it.
@@ -66,15 +117,8 @@ func (b *backend) Login(ctx context.Context, token string) error {
 // plus how many image-only radicals had to be skipped. It returns
 // wanikani.ErrUnauthorized when there is no token or it was rejected.
 func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
-	if b.client == nil {
-		tok, err := store.LoadToken()
-		if errors.Is(err, store.ErrNoToken) {
-			return nil, 0, wanikani.ErrUnauthorized
-		}
-		if err != nil {
-			return nil, 0, err
-		}
-		b.client = wanikani.NewClient(b.base, tok)
+	if err := b.connect(); err != nil {
+		return nil, 0, err
 	}
 	if err := b.flushPending(ctx); err != nil {
 		return nil, 0, err
@@ -96,25 +140,42 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	return items, skipped, nil
 }
 
-func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[wanikani.Subject], error) {
-	path := filepath.Join(b.dir, "subjects.json")
-	var cache subjectCache
-	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != subjectCacheVersion {
-		cache = subjectCache{Version: subjectCacheVersion} // corrupt or old: full sync
+// syncResources loads a cached collection from path, fetches what changed
+// since the last sync (everything if the cache is missing, corrupt, or from
+// another version), merges by ID, and saves it back.
+func syncResources[T any](path string, version int,
+	fetch func(since time.Time) ([]wanikani.Resource[T], error)) (map[int]wanikani.Resource[T], error) {
+	var cache resourceCache[T]
+	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != version {
+		cache = resourceCache[T]{Version: version}
 	}
 	started := time.Now()
-	fresh, err := b.client.Subjects(ctx, cache.SyncedAt)
+	fresh, err := fetch(cache.SyncedAt)
 	if err != nil {
 		return nil, err
 	}
-	if cache.Subjects == nil {
-		cache.Subjects = map[int]wanikani.Resource[wanikani.Subject]{}
+	if cache.Items == nil {
+		cache.Items = map[int]wanikani.Resource[T]{}
 	}
-	for _, s := range fresh {
-		cache.Subjects[s.ID] = s
+	for _, r := range fresh {
+		cache.Items[r.ID] = r
 	}
 	cache.SyncedAt = started
-	return cache.Subjects, store.WriteJSON(path, cache)
+	return cache.Items, store.WriteJSON(path, cache)
+}
+
+func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[wanikani.Subject], error) {
+	return syncResources(filepath.Join(b.dir, "subjects.json"), subjectCacheVersion,
+		func(since time.Time) ([]wanikani.Resource[wanikani.Subject], error) {
+			return b.client.Subjects(ctx, since)
+		})
+}
+
+func (b *backend) syncAssignments(ctx context.Context) (map[int]wanikani.Resource[wanikani.Assignment], error) {
+	return syncResources(filepath.Join(b.dir, "assignments.json"), assignmentCacheVersion,
+		func(since time.Time) ([]wanikani.Resource[wanikani.Assignment], error) {
+			return b.client.Assignments(ctx, since)
+		})
 }
 
 func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
