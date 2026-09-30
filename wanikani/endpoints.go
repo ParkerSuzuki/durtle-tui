@@ -50,6 +50,18 @@ func (c *Client) ReviewAssignments(ctx context.Context) ([]Resource[Assignment],
 	return getAll[Assignment](ctx, c, "assignments?immediately_available_for_review=true&hidden=false")
 }
 
+// Summary fetches lessons and reviews available now and per hour for the next day.
+func (c *Client) Summary(ctx context.Context) (Summary, error) {
+	var r Resource[Summary]
+	err := c.do(ctx, http.MethodGet, c.base+"summary", nil, &r)
+	return r.Data, err
+}
+
+// Assignments fetches assignments changed after t (all of them if t is zero).
+func (c *Client) Assignments(ctx context.Context, t time.Time) ([]Resource[Assignment], error) {
+	return getAll[Assignment](ctx, c, updatedAfter("assignments", t))
+}
+
 // SubmitReview records a finished review for one assignment.
 func (c *Client) SubmitReview(ctx context.Context, assignmentID, incorrectMeaning, incorrectReading int) error {
 	body := map[string]any{"review": map[string]int{
