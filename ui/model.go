@@ -103,6 +103,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		// The text area is the inner width minus the "> " prompt and the cursor.
+		m.input.SetWidth(max(m.innerWidth()-3, 10))
 		return m, nil
 	case loadedMsg:
 		return m.loaded(msg)
@@ -255,6 +257,10 @@ func accepted(it review.Item, p review.Part) []string {
 	}
 	return it.Meanings
 }
+
+// innerWidth is the terminal width minus the page padding, or 0 before the
+// first resize message arrives.
+func (m Model) innerWidth() int { return max(m.width-2*pagePadding, 0) }
 
 func (m Model) quit() (tea.Model, tea.Cmd) {
 	if m.inFlight == 0 {

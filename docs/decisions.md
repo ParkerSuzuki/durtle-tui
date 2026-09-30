@@ -155,3 +155,10 @@ grant, longer).
 **Decision:** Radical teal `#2A9D8F`, kanji amber `#E9A23B`, vocabulary green `#6A994E`. Meaning prompt: light bar `#F4F1DE` with `#1D1D1D` text. Reading prompt: dark bar `#3D405B` with `#F4F1DE` text.
 **Why:** Distinct from WaniKani, readable on dark and light terminals, meaning vs reading is obvious at a glance.
 **Passed on:** Nothing formal; the user accepted it "for now", so revisit once it is on screen.
+
+## 17. Review screen spans the terminal (2026-09-30)
+
+**Context:** The review screen was a fixed 55 cells wide; the user wanted it to fill the terminal and follow resizes.
+**Decision:** The character block, prompt bar, and input stretch to the terminal width minus a 2-column margin, recomputed on every `tea.WindowSizeMsg`. Characters and the prompt label are centered; typed answers stay left-aligned.
+**Why:** Matches how the review page uses the whole screen. Bubble Tea already sends a message on every resize, so it costs one width field and a few style calls.
+**Passed on:** A max width with centered layout (reads better on very wide terminals; revisit if it looks stretched).

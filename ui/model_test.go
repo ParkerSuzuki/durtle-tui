@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
@@ -129,5 +130,31 @@ func TestReadingEditMidAnswer(t *testing.T) {
 	}
 	if got, pos := m.input.Value(), m.input.Position(); got != "おかんな" || pos != 2 {
 		t.Errorf("value %q cursor %d, want %q cursor 2", got, pos, "おかんな")
+	}
+}
+
+// The review screen spans the terminal and follows resizes.
+func TestReviewFillsTerminalWidth(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	for _, width := range []int{80, 120, 60} {
+		m, _ = step(t, m, tea.WindowSizeMsg{Width: width, Height: 30})
+		lines := strings.Split(m.View().Content, "\n")
+		var bar, chars string
+		for _, l := range lines {
+			if strings.Contains(l, "Radical meaning") {
+				bar = l
+			}
+			if strings.Contains(l, "一") {
+				chars = l
+			}
+		}
+		for name, line := range map[string]string{"prompt bar": bar, "character block": chars} {
+			if got := lipgloss.Width(line); got != width {
+				t.Errorf("width %d: %s line is %d cells wide", width, name, got)
+			}
+		}
+		if got := m.input.Width(); got < width-8 {
+			t.Errorf("width %d: input is only %d wide", width, got)
+		}
 	}
 }

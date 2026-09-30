@@ -9,6 +9,9 @@ import (
 	"github.com/ParkerSuzuki/durtle-tui/review"
 )
 
+// pagePadding is the blank columns left and right of every screen.
+const pagePadding = 2
+
 var (
 	typeColors = map[string]string{
 		"radical":         "#2A9D8F",
@@ -21,6 +24,7 @@ var (
 	readingBar = lipgloss.NewStyle().Bold(true).Padding(0, 2).
 			Foreground(lipgloss.Color("#F4F1DE")).Background(lipgloss.Color("#3D405B"))
 	dim   = lipgloss.NewStyle().Faint(true)
+	page  = lipgloss.NewStyle().Padding(1, pagePadding)
 	title = lipgloss.NewStyle().Bold(true)
 )
 
@@ -41,7 +45,7 @@ func (m Model) View() tea.View {
 	if m.quitting {
 		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting...", m.inFlight))
 	}
-	v := tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render(body))
+	v := tea.NewView(page.Render(body))
 	v.AltScreen = true
 	return v
 }
@@ -66,13 +70,19 @@ func (m Model) onboardingView() string {
 func (m Model) reviewView() string {
 	item, part, _ := m.session.Current()
 	done := len(m.session.Results())
-	chars := lipgloss.NewStyle().Bold(true).Padding(1, 4).
+	charStyle := lipgloss.NewStyle().Bold(true).Padding(1, 4).
 		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color(typeColors[item.Type])).
-		Render(item.Characters)
+		Background(lipgloss.Color(typeColors[item.Type]))
+	chars := charStyle.Render(item.Characters)
 	bar := meaningBar
 	if part == review.Reading {
 		bar = readingBar
+	}
+	if w := m.innerWidth(); w > 0 {
+		// Span the terminal, content centered. Styles are values, so these
+		// calls change local copies, not the shared package-level styles.
+		chars = charStyle.Width(w).Align(lipgloss.Center).Render(item.Characters)
+		bar = bar.Width(w).Align(lipgloss.Center)
 	}
 	prompt := bar.Render(fmt.Sprintf("%s %s", typeLabel(item.Type), part))
 	return strings.Join([]string{
