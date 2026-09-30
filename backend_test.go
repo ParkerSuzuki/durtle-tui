@@ -252,3 +252,25 @@ func TestDashboard(t *testing.T) {
 		t.Errorf("assignment requests = %q; want a full sync, then an incremental one", assignmentQueries)
 	}
 }
+
+// An assignment cache from another format version is refetched in full.
+func TestOldAssignmentCacheForcesFullSync(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Write([]byte(`{"pages":{"next_url":null},"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	old := map[string]any{"version": 0, "synced_at": "2026-09-01T00:00:00Z", "items": map[string]any{}}
+	if err := store.WriteJSON(filepath.Join(b.dir, "assignments.json"), old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.syncAssignments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(gotQuery, "updated_after") {
+		t.Errorf("old cache synced incrementally (%q); want a full sync", gotQuery)
+	}
+}

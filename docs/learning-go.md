@@ -618,3 +618,9 @@ list the fields that mattered, and could drift out of date.
 **`lipgloss.JoinHorizontal`** places multi-line blocks side by side and pads
 shorter ones to the same height, which is how the two tiles and the
 two-space gap between them line up.
+
+**Postscript: `switch` on a string with several values per case.**
+`case ":q", ":wq":` matches either value, which is how the review screen
+recognizes both vim commands before an answer is graded. Go's `switch` has
+no fallthrough by default, so `case "":` returning early and the vim case
+never run into each other.

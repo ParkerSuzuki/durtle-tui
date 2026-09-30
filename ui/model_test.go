@@ -531,3 +531,59 @@ func TestCountTiles(t *testing.T) {
 		t.Errorf("big counts not placed at row %d: %q", tileNumberRow-1, seq)
 	}
 }
+
+// :q and :wq leave a session for the dashboard, from either answer box, and
+// never submit the half-answered item.
+func TestVimQuitToDashboard(t *testing.T) {
+	woman := review.Item{AssignmentID: 3, Type: "vocabulary", Characters: "女",
+		Meanings: []string{"Woman"}, Readings: []string{"おんな"}}
+	for _, cmdText := range []string{":q", ":wq"} {
+		fb := &fakeBackend{items: []review.Item{woman}, dash: dashboard.Dashboard{Level: 7}}
+		m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+		if _, part, _ := m.session.Current(); part == review.Meaning {
+			m, _ = typeAndEnter(t, m, "woman") // half-answered: reading still to go
+		}
+		for _, k := range cmdText { // typed key by key, through the kana conversion
+			m, _ = step(t, m, tea.KeyPressMsg{Code: k, Text: string(k)})
+		}
+		m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		if m.screen != loading || cmd == nil {
+			t.Fatalf("%s: screen %v, cmd %v; want to load the dashboard", cmdText, m.screen, cmd)
+		}
+		if m, _ = step(t, m, cmd()); m.screen != home || m.dash.Level != 7 {
+			t.Errorf("%s: screen %v; want the dashboard", cmdText, m.screen)
+		}
+		if len(fb.submitted) != 0 {
+			t.Errorf("%s: the half-answered item was submitted: %+v", cmdText, fb.submitted)
+		}
+	}
+}
+
+// Anything but exactly :q or :wq is an answer.
+func TestNotQuiteVimQuitIsAnAnswer(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	m, _ = typeAndEnter(t, m, ":qq")
+	if m.screen != reviewing || !m.showingAnswer {
+		t.Errorf("\":qq\" should be graded as a wrong answer; screen %v", m.screen)
+	}
+}
+
+func TestReviewShowsQuitHint(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, ":q dashboard") {
+		t.Errorf("review screen has no :q hint:\n%s", got)
+	}
+}
+
+func TestFailedScreenSaysWhatFailed(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), dashboardMsg{err: errors.New("boom")})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Could not sync") {
+		t.Errorf("dashboard failure should say sync failed:\n%s", got)
+	}
+}
+
+func TestProgressBarShowsAnyProgress(t *testing.T) {
+	if got := stripANSI(progressBar(1, 32, 20, "#E9A23B")); !strings.HasPrefix(got, "█") {
+		t.Errorf("1 of 32 drew no filled cell: %q", got)
+	}
+}

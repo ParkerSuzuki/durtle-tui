@@ -51,7 +51,11 @@ func (m Model) View() tea.View {
 	case home:
 		body = m.homeView()
 	case failed:
-		body = fmt.Sprintf("Could not load reviews:\n\n%v\n\n%s", m.err, dim.Render("Enter to retry, Esc to quit"))
+		what := "sync with WaniKani"
+		if m.loadingReviews {
+			what = "load reviews"
+		}
+		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
 	if m.quitting {
 		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting...", m.inFlight))
@@ -113,6 +117,8 @@ func (m Model) reviewView() string {
 		m.answerView(),
 		"",
 		m.feedback,
+		"",
+		dim.Render(":q dashboard   esc quit"),
 	}, "\n")
 }
 
@@ -384,6 +390,9 @@ func progressBar(done, total, width int, color string) string {
 	filled := 0
 	if total > 0 {
 		filled = min(done*width/total, width)
+	}
+	if done > 0 {
+		filled = max(filled, 1) // any progress shows
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) +
 		dim.Render(strings.Repeat("░", width-filled))

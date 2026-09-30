@@ -119,6 +119,14 @@ func (m Model) loadFailed(err error) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// toDashboard ends the review screens and reloads the dashboard.
+func (m Model) toDashboard() (tea.Model, tea.Cmd) {
+	m.screen, m.loadingReviews = loading, false
+	m.feedback = ""
+	m.input.Reset()
+	return m, m.loadDashboard()
+}
+
 func (m Model) startReviews() (tea.Model, tea.Cmd) {
 	if m.dash.Reviews == 0 {
 		return m, nil
@@ -300,8 +308,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadDashboard()
 	case summary:
-		m.screen, m.loadingReviews = loading, false
-		return m, m.loadDashboard()
+		return m.toDashboard()
 	case reviewing:
 		return m.answer()
 	}
@@ -316,8 +323,12 @@ func (m Model) answer() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	value := strings.TrimSpace(m.input.Value())
-	if value == "" {
+	switch value {
+	case "":
 		return m, nil
+	case ":q", ":wq": // vim habit: leave for the dashboard
+		// Finished items are already submitted; the one in progress stays due.
+		return m.toDashboard()
 	}
 	item, part, _ := m.session.Current()
 	grade, sub := m.session.Answer(value)
