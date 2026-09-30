@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 )
 
@@ -47,6 +48,8 @@ func (m Model) View() tea.View {
 		body = m.reviewView()
 	case summary:
 		body = m.summaryView()
+	case home:
+		body = m.homeView()
 	case failed:
 		body = fmt.Sprintf("Could not load reviews:\n\n%v\n\n%s", m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
@@ -248,7 +251,7 @@ func (m Model) summaryView() string {
 	if m.lost > 0 {
 		lines = append(lines, fmt.Sprintf("%d could not be sent or saved (%v). Redo them on the website.", m.lost, m.lostErr))
 	}
-	lines = append(lines, "", dim.Render("Enter or Esc to quit"))
+	lines = append(lines, "", dim.Render("Enter for the dashboard, Esc to quit"))
 	return strings.Join(lines, "\n")
 }
 
@@ -273,4 +276,86 @@ func percentCorrect(results []review.Result) string {
 		}
 	}
 	return fmt.Sprintf("%d%%", clean*100/len(results))
+}
+
+const (
+	srsColor        = "#A8DADC"
+	maxForecastRows = 8
+)
+
+func (m Model) homeView() string {
+	d, p := m.dash, m.dash.Progress
+	barW := max(m.innerWidth()-44, 5)
+	lines := []string{
+		title.Render("durtle-tui") + dim.Render(fmt.Sprintf("   Level %d", d.Level)),
+		"",
+		fmt.Sprintf("Lessons %-6d Reviews %d", d.Lessons, d.Reviews),
+		"",
+		fmt.Sprintf("%-18s %s  %d / %d   (%d needed to level up)", fmt.Sprintf("Level %d kanji", d.Level),
+			progressBar(p.KanjiPassed, p.Kanji, barW, typeColors["kanji"]), p.KanjiPassed, p.Kanji, p.KanjiNeeded),
+		fmt.Sprintf("%-18s %s  %d / %d", fmt.Sprintf("Level %d radicals", d.Level),
+			progressBar(p.RadicalsPassed, p.Radicals, barW, typeColors["radical"]), p.RadicalsPassed, p.Radicals),
+		"",
+		"Upcoming reviews",
+	}
+	lines = append(lines, forecastLines(d.Forecast, barW)...)
+	lines = append(lines, "")
+	lines = append(lines, srsLines(d.SRS, barW)...)
+	hint := "q quit"
+	if d.Reviews > 0 {
+		hint = "r start reviews   q quit"
+	}
+	lines = append(lines, "", dim.Render(hint))
+	return strings.Join(lines, "\n")
+}
+
+// progressBar draws done out of total as width cells: filled in color, the rest dim.
+func progressBar(done, total, width int, color string) string {
+	filled := 0
+	if total > 0 {
+		filled = min(done*width/total, width)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) +
+		dim.Render(strings.Repeat("░", width-filled))
+}
+
+// scaledBar draws n as a bar where most fills width; any n > 0 gets at least one cell.
+func scaledBar(n, most, width int) string {
+	cells := 0
+	if most > 0 {
+		cells = n * width / most
+	}
+	if n > 0 {
+		cells = max(cells, 1)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(srsColor)).Render(strings.Repeat("█", cells))
+}
+
+func forecastLines(hours []dashboard.Hour, width int) []string {
+	if len(hours) == 0 {
+		return []string{dim.Render("  none in the next 24 hours")}
+	}
+	hours = hours[:min(len(hours), maxForecastRows)]
+	most := 0
+	for _, h := range hours {
+		most = max(most, h.Added)
+	}
+	var lines []string
+	for _, h := range hours {
+		lines = append(lines, fmt.Sprintf("  %-9s %+5d %5d  %s",
+			h.At.Local().Format("Mon 15:04"), h.Added, h.Total, scaledBar(h.Added, most, width)))
+	}
+	return lines
+}
+
+func srsLines(srs dashboard.SRS, width int) []string {
+	most := 0
+	for _, n := range srs {
+		most = max(most, n)
+	}
+	var lines []string
+	for i, n := range srs {
+		lines = append(lines, fmt.Sprintf("%-12s %5d  %s", dashboard.StageNames[i], n, scaledBar(n, most, width)))
+	}
+	return lines
 }

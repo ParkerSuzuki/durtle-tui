@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
@@ -22,6 +23,12 @@ type fakeBackend struct {
 	loadErr   error
 	submitted []review.Submission
 	submitErr error
+	dash      dashboard.Dashboard
+	dashErr   error
+}
+
+func (f *fakeBackend) Dashboard(context.Context) (dashboard.Dashboard, error) {
+	return f.dash, f.dashErr
 }
 
 func (f *fakeBackend) Login(context.Context, string) error { return nil }
@@ -363,5 +370,73 @@ func TestSkippedRadicalsNoted(t *testing.T) {
 	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: nil, skipped: 2})
 	if got := m.View().Content; !strings.Contains(got, "2 radicals") || !strings.Contains(got, "rsvg-convert") {
 		t.Errorf("summary should say 2 radicals were skipped and why:\n%s", got)
+	}
+}
+
+var sampleDash = dashboard.Dashboard{Level: 12, Lessons: 5, Reviews: 67,
+	Forecast: []dashboard.Hour{{At: time.Date(2026, 9, 30, 15, 0, 0, 0, time.Local), Added: 12, Total: 79}},
+	Progress: dashboard.Progress{Radicals: 10, RadicalsPassed: 9, Kanji: 33, KanjiPassed: 21, KanjiNeeded: 30},
+	SRS:      dashboard.SRS{88, 143, 97, 201, 12}}
+
+func TestDashboardShowsPanels(t *testing.T) {
+	for _, width := range []int{100, 30} { // 30: narrow terminals must not panic
+		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
+		m, _ = step(t, m, dashboardMsg{d: sampleDash})
+		got := stripANSI(m.View().Content)
+		for _, want := range []string{"Level 12", "Reviews 67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("width %d: dashboard missing %q", width, want)
+			}
+		}
+	}
+}
+
+func TestEmptyDashboard(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 80, Height: 40})
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Level: 1}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "none in the next 24 hours") {
+		t.Errorf("empty forecast not explained:\n%s", got)
+	}
+}
+
+func TestStartReviewsFromDashboard(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{Reviews: 0}})
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil || next.screen != home {
+		t.Errorf("r with nothing due: screen %v, cmd %v; want to stay on the dashboard", next.screen, cmd)
+	}
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Reviews: 1}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if m.screen != loading || cmd == nil {
+		t.Fatalf("r with reviews due: screen %v, cmd %v", m.screen, cmd)
+	}
+	m, _ = step(t, m, cmd())
+	if m.screen != reviewing {
+		t.Fatalf("screen = %v, want reviewing", m.screen)
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if m.input.Value() != "r" {
+		t.Errorf("r during reviews must be typed, got %q", m.input.Value())
+	}
+}
+
+func TestSummaryReturnsToDashboard(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, dash: dashboard.Dashboard{Level: 3}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, submit := typeAndEnter(t, m, "ground") // summary, one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.screen != loading || cmd == nil {
+		t.Fatalf("Enter on summary: screen %v, cmd %v", m.screen, cmd)
+	}
+	m, _ = step(t, m, cmd())
+	if m.screen != home || m.dash.Level != 3 {
+		t.Fatalf("screen %v, level %d; want the dashboard", m.screen, m.dash.Level)
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd != nil || !m.quitting {
+		t.Fatal("q with a submit in flight must wait for it")
+	}
+	if _, cmd = step(t, m, submit()); cmd == nil {
+		t.Fatal("expected quit once the submit finished")
 	}
 }

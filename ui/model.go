@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/ParkerSuzuki/durtle-tui/dashboard"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
 )
@@ -19,6 +20,7 @@ type Backend interface {
 	Login(ctx context.Context, token string) error
 	Load(ctx context.Context) (items []review.Item, skipped int, err error)
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
+	Dashboard(ctx context.Context) (dashboard.Dashboard, error)
 }
 
 // inputWidth fits a WaniKani token (36 characters) with room to spare.
@@ -32,6 +34,7 @@ const (
 	reviewing
 	summary
 	failed
+	home // the dashboard
 )
 
 type (
@@ -41,6 +44,10 @@ type (
 		err     error
 	}
 	loginMsg     struct{ err error }
+	dashboardMsg struct {
+		d   dashboard.Dashboard
+		err error
+	}
 	drawBigMsg   struct{}
 	submittedMsg struct {
 		pending bool
@@ -50,23 +57,25 @@ type (
 
 // Model is the whole UI state. Update returns a changed copy.
 type Model struct {
-	backend       Backend
-	screen        screen
-	input         textinput.Model
-	session       *review.Session
-	feedback      string
-	showingAnswer bool // a wrong answer is on screen; Enter continues
-	err           error
-	inFlight      int   // submits not yet finished
-	pending       int   // saved to retry next launch
-	rejected      int   // refused by WaniKani
-	lost          int   // could not be sent or saved
-	lostErr       error // why the last one was lost
-	skipped       int   // image-only radicals left for the website
-	quitting      bool
-	width         int
-	bigText       bool   // draw characters with kitty's text sizing protocol
-	bigDrawn      string // bigKey of the last big-glyph draw
+	backend        Backend
+	screen         screen
+	input          textinput.Model
+	session        *review.Session
+	feedback       string
+	showingAnswer  bool // a wrong answer is on screen; Enter continues
+	err            error
+	inFlight       int   // submits not yet finished
+	pending        int   // saved to retry next launch
+	rejected       int   // refused by WaniKani
+	lost           int   // could not be sent or saved
+	lostErr        error // why the last one was lost
+	skipped        int   // image-only radicals left for the website
+	quitting       bool
+	width          int
+	bigText        bool   // draw characters with kitty's text sizing protocol
+	bigDrawn       string // bigKey of the last big-glyph draw
+	dash           dashboard.Dashboard
+	loadingReviews bool // which load a retry repeats: reviews or the dashboard
 }
 
 // New builds the UI. bigText turns on large characters, which only kitty
@@ -78,7 +87,39 @@ func New(b Backend, bigText bool) Model {
 	return Model{backend: b, screen: loading, input: in, bigText: bigText}
 }
 
-func (m Model) Init() tea.Cmd { return m.load() }
+func (m Model) Init() tea.Cmd { return m.loadDashboard() }
+
+func (m Model) loadDashboard() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		d, err := m.backend.Dashboard(ctx)
+		return dashboardMsg{d, err}
+	}
+}
+
+// loadFailed sends a load error to onboarding (bad or missing token) or to
+// the failed screen.
+func (m Model) loadFailed(err error) (tea.Model, tea.Cmd) {
+	if errors.Is(err, wanikani.ErrUnauthorized) {
+		m.screen = onboarding
+		m.input.EchoMode = textinput.EchoPassword
+		m.input.Placeholder = "paste your API token"
+		m.input.Reset()
+		return m, nil
+	}
+	m.screen = failed
+	m.err = err
+	return m, nil
+}
+
+func (m Model) startReviews() (tea.Model, tea.Cmd) {
+	if m.dash.Reviews == 0 {
+		return m, nil
+	}
+	m.screen, m.loadingReviews = loading, true
+	return m, m.load()
+}
 
 func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
@@ -153,7 +194,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.EchoMode = textinput.EchoNormal
 		m.input.Placeholder = ""
 		m.input.Reset()
-		return m, m.load()
+		m.loadingReviews = false
+		return m, m.loadDashboard()
+	case dashboardMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		m.dash = msg.d
+		m.screen = home
+		return m, nil
 	case submittedMsg:
 		m.inFlight--
 		var apiErr *wanikani.APIError
@@ -171,6 +220,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.screen == home {
+			switch msg.String() {
+			case "r", "enter":
+				return m.startReviews()
+			case "q", "esc", "ctrl+c":
+				return m.quit()
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m.quit()
@@ -193,18 +251,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case errors.Is(msg.err, wanikani.ErrUnauthorized):
-		m.screen = onboarding
-		m.input.EchoMode = textinput.EchoPassword
-		m.input.Placeholder = "paste your API token"
-		m.input.Reset()
-		return m, nil
-	case msg.err != nil:
-		m.screen = failed
-		m.err = msg.err
-		return m, nil
+	if msg.err != nil {
+		return m.loadFailed(msg.err)
 	}
+	m.pending, m.rejected, m.lost, m.lostErr = 0, 0, 0, nil // per-session counts
 	m.skipped = msg.skipped
 	m.session = review.NewSession(msg.items, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	m.screen = reviewing
@@ -222,11 +272,14 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 			return m, m.login(tok)
 		}
 	case failed:
-		m.screen = loading
-		m.err = nil
-		return m, m.load()
+		m.screen, m.err = loading, nil
+		if m.loadingReviews {
+			return m, m.load()
+		}
+		return m, m.loadDashboard()
 	case summary:
-		return m.quit()
+		m.screen, m.loadingReviews = loading, false
+		return m, m.loadDashboard()
 	case reviewing:
 		return m.answer()
 	}
