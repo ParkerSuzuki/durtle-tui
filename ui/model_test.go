@@ -440,3 +440,16 @@ func TestSummaryReturnsToDashboard(t *testing.T) {
 		t.Fatal("expected quit once the submit finished")
 	}
 }
+
+// No dashboard line may be wider than the terminal once there is room for it.
+func TestDashboardFitsWidth(t *testing.T) {
+	for _, width := range []int{80, 100, 140} {
+		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
+		m, _ = step(t, m, dashboardMsg{d: sampleDash})
+		for _, line := range strings.Split(m.View().Content, "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width %d: line is %d cells: %q", width, w, stripANSI(line))
+			}
+		}
+	}
+}

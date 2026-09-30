@@ -5,7 +5,9 @@ or affiliated with WaniKani or Tofugu.
 
 Do your WaniKani reviews from the terminal. Written in Go.
 
-Status: milestone 1 (reviews) works: sync, back-to-back reviews graded like the
+Status: milestones 1 (reviews) and 2 (dashboard) work. The dashboard shows
+lessons and reviews available, a 24-hour forecast, level progress, and SRS
+counts; reviews start from it. Reviews: sync, back-to-back reviews graded like the
 website, submissions that are never lost, big kanji in kitty, and image radicals.
 Lessons, dashboard, and audio come later; see [TODO.md](TODO.md).
 

@@ -545,3 +545,52 @@ not need an interface; a function type is lighter.
 files written before it existed; the old files simply lack the key. A
 `Version` constant stored in the file, compared on load, turns "silently
 missing data forever" into "one full resync".
+
+## 12. Generic functions that save code, and growing an interface
+
+Code: [dashboard/dashboard.go](../dashboard/dashboard.go), [backend.go](../backend.go) (`syncResources`), [ui/view.go](../ui/view.go) (`homeView`)
+
+**One generic function replaces two copies.** Subjects and assignments are
+cached the same way: load a file, fetch what changed since the last sync,
+merge by ID, save. `syncResources[T any](path, version, fetch)` does that
+once. Callers never write `[wanikani.Subject]`: Go *infers* `T` from the
+`fetch` argument's type, `func(time.Time) ([]wanikani.Resource[wanikani.Subject], error)`.
+The on-disk shape is generic too: `resourceCache[T]`.
+
+**Closures adapt a method to a function type.** `fetch` needs one argument
+(`since`), but `b.client.Subjects` needs two (`ctx`, `since`). The wrapper
+`func(since time.Time) (...) { return b.client.Subjects(ctx, since) }`
+captures `ctx` and presents the one-argument shape. No adapter types.
+
+**Growing an interface finds every implementation for you.** Adding
+`Dashboard` to `ui.Backend` made the build fail in exactly two places: the
+real `*backend` and the test's `fakeBackend`. That is the compiler doing
+the "did I update everything?" check that a dynamic language leaves to you.
+
+**A pure package as a seam.** `dashboard.Build` takes data and returns
+numbers: no network, no disk, no screen. The tests hand it tiny maps and
+check the result, including awkward cases (a summary entry exactly at
+`now`, hidden subjects, lessons not started) in microseconds.
+
+**Sorting with `slices.SortFunc`** (Go 1.21+) takes a comparison returning
+negative, zero or positive. `time.Time.Compare` (Go 1.20+) returns exactly
+that, so the sort is one line.
+
+**Comparing structs and arrays with `==`.** `Progress` and `SRS` hold only
+numbers, so tests compare whole values: `d.SRS != SRS{1, 21, 1, 0, 1}`.
+Slices and maps are not comparable, which is why the forecast test loops.
+
+**Integer ceiling division.** 90% of 33 kanji, rounded up, is
+`(33*9 + 9) / 10 = 30` without touching floating point: adding
+`denominator - 1` before dividing rounds up.
+
+**Format verbs for columns.** `%-18s` left-aligns in 18 cells, `%5d`
+right-aligns a number in 5, `%+5d` always shows the sign (`+12`).
+`t.Local().Format("Mon 15:04")` uses Go's reference time (Mon Jan 2
+15:04:05 2006) as the layout: you write the example date the way you want
+it printed.
+
+**A test that measures, not just reads.** The first real run showed a line
+running off a 100-column screen, which the content test could not see.
+`TestDashboardFitsWidth` now checks `lipgloss.Width` of every line, so a
+layout change that overflows fails in CI instead of on your screen.

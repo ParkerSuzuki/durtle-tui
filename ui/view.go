@@ -285,7 +285,9 @@ const (
 
 func (m Model) homeView() string {
 	d, p := m.dash, m.dash.Progress
-	barW := max(m.innerWidth()-44, 5)
+	// The kanji line is the widest: an 18-cell label, the bar, and up to 37
+	// cells of counts ("  123 / 456   (411 needed to level up)").
+	barW := max(m.innerWidth()-(18+1+37), 5)
 	lines := []string{
 		title.Render("durtle-tui") + dim.Render(fmt.Sprintf("   Level %d", d.Level)),
 		"",

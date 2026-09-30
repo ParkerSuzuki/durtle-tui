@@ -2,7 +2,7 @@
 
 Deferred work. Each item gets its own design discussion before work starts.
 
-Milestone 2: dashboard (in design).
+Milestone 2: dashboard (done).
 Milestone 3 candidates: lessons, or review polish (audio, undo, wrap-up, the review-finding minors below).
 
 - [ ] Sharper radical images in kitty via the graphics protocol (half-block art works everywhere; decision 20).
