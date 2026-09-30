@@ -748,3 +748,37 @@ func TestQuitWaitsForLessonStart(t *testing.T) {
 		t.Fatal("expected quit once the start finished")
 	}
 }
+
+func TestSettingsScreen(t *testing.T) {
+	fb := &fakeBackend{settings: lessons.Default(3)}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m, _ = step(t, m, cmd())
+	if m.screen != settingsScreen {
+		t.Fatalf("screen %v, want settings", m.screen)
+	}
+	key := func(code rune) { m, _ = step(t, m, tea.KeyPressMsg{Code: code}) }
+	for range 9 {
+		key(tea.KeyLeft) // daily cap 10 -> 1
+	}
+	key(tea.KeyDown)
+	key(tea.KeyRight) // order -> interleaved
+	key(tea.KeyDown)
+	key(tea.KeySpace) // radicals off
+	key(tea.KeyDown)
+	key(tea.KeySpace) // kanji off
+	key(tea.KeyDown)
+	key(tea.KeySpace) // vocabulary: refused, it is the last type on
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "‹ 1 ›") || !strings.Contains(got, "interleaved") {
+		t.Errorf("settings view:\n%s", got)
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m, _ = step(t, m, cmd()) // saved
+	want := lessons.Settings{DailyCap: 1, Order: lessons.Interleaved, Types: lessons.Types{Vocabulary: true}, BatchSize: 3}
+	if len(fb.saved) != 1 || fb.saved[0] != want {
+		t.Errorf("saved %+v, want %+v", fb.saved, want)
+	}
+	if m.screen != loading {
+		t.Errorf("after saving: screen %v, want the dashboard reloading", m.screen)
+	}
+}

@@ -372,6 +372,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, nil
+	case settingsMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		m.settings, m.settingRow, m.screen = msg.s, 0, settingsScreen
+		return m, nil
+	case savedMsg:
+		if msg.err != nil {
+			return m.loadFailed(msg.err)
+		}
+		return m.toDashboard() // the lesson count depends on the settings
 	case submittedMsg:
 		m.inFlight--
 		var apiErr *wanikani.APIError
@@ -398,10 +409,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.startReviews()
 			case "l":
 				return m.startLessons()
+			case "s":
+				return m, m.loadSettings()
 			case "q", "esc", "ctrl+c":
 				return m.quit()
 			}
 			return m, nil
+		}
+		if m.screen == settingsScreen {
+			return m.settingsKey(msg.String())
 		}
 		if m.screen == teaching {
 			last := len(m.pages()) - 1
@@ -567,5 +583,62 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.quitting = true
+	return m, nil
+}
+
+const settingRows = 6 // daily cap, order, radicals, kanji, vocabulary, batch size
+
+func (m Model) loadSettings() tea.Cmd {
+	return func() tea.Msg {
+		s, err := m.backend.Settings()
+		return settingsMsg{s, err}
+	}
+}
+
+func (m Model) saveSettings() tea.Cmd {
+	s := m.settings // a copy: the command runs later, on another goroutine
+	return func() tea.Msg { return savedMsg{m.backend.SaveSettings(s)} }
+}
+
+func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
+	s := &m.settings
+	prev := *s
+	switch key {
+	case "up":
+		m.settingRow = (m.settingRow + settingRows - 1) % settingRows
+	case "down":
+		m.settingRow = (m.settingRow + 1) % settingRows
+	case "left", "right", "space":
+		d := 1
+		if key == "left" {
+			d = -1
+		}
+		switch m.settingRow {
+		case 0:
+			s.DailyCap += d
+		case 1:
+			if s.Order == lessons.Classic {
+				s.Order = lessons.Interleaved
+			} else {
+				s.Order = lessons.Classic
+			}
+		case 2:
+			s.Types.Radical = !s.Types.Radical
+		case 3:
+			s.Types.Kanji = !s.Types.Kanji
+		case 4:
+			s.Types.Vocabulary = !s.Types.Vocabulary
+		case 5:
+			s.BatchSize += d
+		}
+		if s.Types == (lessons.Types{}) {
+			*s = prev // at least one type stays on
+		}
+		*s = s.Clamp()
+	case "esc", "enter":
+		return m, m.saveSettings()
+	case "ctrl+c":
+		return m.quit()
+	}
 	return m, nil
 }

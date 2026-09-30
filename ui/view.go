@@ -55,6 +55,8 @@ func (m Model) View() tea.View {
 		body = m.teachingView()
 	case lessonSummary:
 		body = m.lessonSummaryView()
+	case settingsScreen:
+		body = m.settingsView()
 	case failed:
 		what := "sync with WaniKani"
 		switch {
@@ -617,5 +619,33 @@ func (m Model) lessonSummaryView() string {
 		lines = append(lines, "", fmt.Sprintf("%d could not be started (%v). They stay in your lessons.", m.startFailed, m.startErr))
 	}
 	lines = append(lines, "", dim.Render("Enter for the dashboard, Esc to quit"))
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) settingsView() string {
+	s := m.settings
+	check := func(on bool) string {
+		if on {
+			return "[x]"
+		}
+		return "[ ]"
+	}
+	rows := [settingRows][2]string{
+		{"Daily lesson cap", fmt.Sprintf("‹ %d ›", s.DailyCap)},
+		{"Order", fmt.Sprintf("‹ %s ›", s.Order)},
+		{"Radicals", check(s.Types.Radical)},
+		{"Kanji", check(s.Types.Kanji)},
+		{"Vocabulary", check(s.Types.Vocabulary)},
+		{"Batch size", fmt.Sprintf("‹ %d ›", s.BatchSize)},
+	}
+	lines := []string{title.Render("Lesson settings"), ""}
+	for i, r := range rows {
+		cursor := "  "
+		if i == m.settingRow {
+			cursor = "> "
+		}
+		lines = append(lines, fmt.Sprintf("%s%-18s %s", cursor, r[0], r[1]))
+	}
+	lines = append(lines, "", dim.Render("↑↓ choose   ←→ change   space toggle   esc save"))
 	return strings.Join(lines, "\n")
 }
