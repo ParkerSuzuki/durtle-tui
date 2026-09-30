@@ -42,3 +42,49 @@ project runs `gofmt -w .` instead of checking style by hand.
 **`go 1.27.0` in go.mod** records the minimum Go version the code needs.
 Newer toolchains keep compiling old code: Go promises backward compatibility
 for the whole 1.x line.
+
+## 2. Strings, bytes, runes, and table-driven tests
+
+Code: [review/kana.go](../review/kana.go), [review/kana_test.go](../review/kana_test.go)
+
+**A Go string is a read-only slice of bytes, usually UTF-8.** `len("かな")` is
+6, not 2, because each kana takes 3 bytes. Indexing `s[i]` gives a *byte*
+(`uint8`), not a character. That is why `ToHiragana` can look at
+`rest[0] == 'n'` cheaply (romaji is ASCII, one byte per letter) but must use
+`utf8.DecodeRuneInString` when it copies anything else through: slicing a
+kana in the middle would produce garbage.
+
+**A rune is a Unicode code point** (`int32` under the hood). Character
+literals in single quotes, like `'ァ'`, are runes. Because runes are numbers,
+`KatakanaToHiragana` converts with arithmetic: every katakana sits exactly
+`'ァ' - 'ぁ'` (0x60) code points above its hiragana twin. `for _, r := range s`
+over a string walks runes, not bytes, which `TestLiveTyping` relies on.
+
+**`strings.Builder`** collects output without copying the whole string on
+every append (strings are immutable, so `s += x` in a loop allocates each
+time).
+
+**Map literals.** `romaji` is a `map[string]string` written inline. Package
+level `var` declarations like it are initialized once, before `main` runs.
+
+**`strings.Map` and `strings.ContainsFunc`** take a function value. Go has
+first-class functions and closures, used here instead of writing loops.
+
+**The built-in `min`** (Go 1.21+) replaced the old habit of writing your own
+`min` helper for every project.
+
+**Table-driven tests** are the Go testing idiom: a slice of anonymous structs
+(`[]struct{ in string; final bool; want string }`), one loop, one assertion.
+Adding a case is one line. `t.Run(name, ...)` makes each row a named
+*subtest*, so a failure prints `TestToHiragana/onna` and you can rerun just
+that row with `go test -run 'TestToHiragana/onna'`.
+
+**Tests live next to the code.** `kana_test.go` sits in the same directory
+and declares `package review`, so it can call unexported (lowercase) names
+like `containsKana`. Names starting with a capital letter are exported
+(visible to other packages); lowercase names are private to the package.
+That one rule replaces `public`/`private` keywords.
+
+**`t.Errorf` vs `t.Fatalf`.** `Errorf` records a failure and keeps going, so
+one run reports every broken row. `Fatalf` stops the test, for when later
+checks would be meaningless.
