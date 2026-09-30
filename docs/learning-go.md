@@ -666,3 +666,31 @@ and edits through `s`, so every setting change lands in the model's copy
 that `Update` returns. `saveSettings` does the opposite on purpose:
 `s := m.settings` copies the value before the closure runs later on
 another goroutine, so a keypress after Esc cannot change what gets saved.
+
+## 15. A nil-able function parameter as a hook
+
+Code: [backend.go](../backend.go) (`syncResources`, `syncAccuracy`), [dashboard/accuracy.go](../dashboard/accuracy.go)
+
+**Hooks without interfaces.** Accuracy needs the *old* counters and the
+*new* ones at the same moment, which only exists inside `syncResources`,
+between loading the cache and merging the changes. Instead of copying that
+function, it gained one parameter: `before func(old, fresh)`. Subjects and
+assignments pass `nil` (a function value's zero value), and the generic
+code checks `if before != nil`. Accuracy passes a closure that writes into
+the `days` map it captured.
+
+**Maps are references.** `AddDeltas(days, ...)` fills `days` without
+returning it: a map value is a small header pointing at shared storage, so
+the caller sees every change. (Slices share their elements the same way,
+but `append` can move them, which is why functions return appended slices.)
+
+**Zero values as "nothing there".** `old[r.ID].Data` on a missing key gives
+a `ReviewStatistic` full of zeros, so a brand new item's answers count in
+full with no special case.
+
+**ISO dates sort as strings.** `time.DateOnly` ("2006-01-02") is zero-padded
+and big-endian, so `day < cutoff` compares dates correctly with plain string
+comparison.
+
+**`switch p := a.Percent(); { ... }`** binds a variable for the whole switch,
+like `if x := f(); x > 0`, keeping `p` scoped to where it is used.

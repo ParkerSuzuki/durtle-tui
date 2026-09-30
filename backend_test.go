@@ -234,6 +234,9 @@ func TestDashboard(t *testing.T) {
 		assignmentQueries = append(assignmentQueries, r.URL.RawQuery)
 		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":9,"object":"assignment","data":{"subject_id":1,"srs_stage":5,"started_at":"2026-01-01T00:00:00Z","passed_at":"2026-01-02T00:00:00Z"}}]}`)
 	})
+	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
@@ -317,6 +320,9 @@ func lessonServer(t *testing.T, startedToday bool) *backend {
 	mux.HandleFunc("/study_materials", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
 	})
+	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -384,5 +390,36 @@ func TestStartLesson(t *testing.T) {
 	b.client = wanikani.NewClient(b.base, "tok")
 	if err := b.StartLesson(context.Background(), 7); err != nil || path != "PUT /assignments/7/start" {
 		t.Errorf("StartLesson: %q, %v", path, err)
+	}
+}
+
+// Accuracy comes from how WaniKani's answer counters change between syncs:
+// the first sync is only a baseline, later increases count toward today.
+func TestAccuracyAcrossSyncs(t *testing.T) {
+	correct := 10
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"data":{"level":1}}`) })
+	mux.HandleFunc("/summary", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"data":{"lessons":[],"reviews":[]}}`) })
+	for _, p := range []string{"/subjects", "/assignments"} {
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`) })
+	}
+	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"review_statistic","data_updated_at":%q,
+			"data":{"subject_id":1,"meaning_correct":%d,"meaning_incorrect":1,"reading_correct":0,"reading_incorrect":0}}]}`,
+			time.Now().UTC().Format(time.RFC3339), correct)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+
+	d, err := b.Dashboard(context.Background())
+	if err != nil || d.Today.Total() != 0 {
+		t.Fatalf("first sync is a baseline: today %+v, %v", d.Today, err)
+	}
+	correct = 13 // three more correct meaning answers since
+	if d, err = b.Dashboard(context.Background()); err != nil || d.Today.Correct != 3 || d.Today.Incorrect != 0 {
+		t.Errorf("today = %+v, %v; want 3 correct", d.Today, err)
 	}
 }

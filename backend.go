@@ -37,6 +37,7 @@ type backend struct {
 const (
 	subjectCacheVersion    = 4
 	assignmentCacheVersion = 1
+	statsCacheVersion      = 1
 )
 
 // radicalArtPx is the size radical images are rasterized to: 20 columns by
@@ -53,6 +54,29 @@ type resourceCache[T any] struct {
 type synonymCache struct {
 	SyncedAt time.Time        `json:"synced_at"`
 	Synonyms map[int][]string `json:"synonyms"` // by subject ID
+}
+
+// syncAccuracy syncs WaniKani's per-subject answer counters and turns every
+// increase into answers on the day it happened (decision 29). Daily totals
+// live in accuracy.json, pruned to the last 30 days.
+func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
+	daysPath := filepath.Join(b.dir, "accuracy.json")
+	days := dashboard.Days{}
+	if err := store.ReadJSON(daysPath, &days); err != nil || days == nil {
+		days = dashboard.Days{} // corrupt: start the history over
+	}
+	_, err := syncResources(filepath.Join(b.dir, "review_statistics.json"), statsCacheVersion,
+		func(since time.Time) ([]wanikani.Resource[wanikani.ReviewStatistic], error) {
+			return b.client.ReviewStatistics(ctx, since)
+		},
+		func(old map[int]wanikani.Resource[wanikani.ReviewStatistic], fresh []wanikani.Resource[wanikani.ReviewStatistic]) {
+			dashboard.AddDeltas(days, old, fresh, time.Local)
+		})
+	if err != nil {
+		return nil, err
+	}
+	days.Prune(time.Now(), 30)
+	return days, store.WriteJSON(daysPath, days)
 }
 
 // connect makes sure there is a client, loading the saved token if needed.
@@ -103,6 +127,12 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	}
 	now := time.Now()
 	d := dashboard.Build(now, user.Level, sum, assignments, subjects)
+	days, err := b.syncAccuracy(ctx)
+	if err != nil {
+		return none, err
+	}
+	d.Today = days[now.Format(time.DateOnly)]
+	d.Yesterday = days[now.AddDate(0, 0, -1).Format(time.DateOnly)]
 	d.LessonsToday = len(lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)),
 		lessons.StartedToday(now, startTimes(assignments)), settings))
 	return d, nil
@@ -152,8 +182,12 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 // syncResources loads a cached collection from path, fetches what changed
 // since the last sync (everything if the cache is missing, corrupt, or from
 // another version), merges by ID, and saves it back.
+//
+// before, when not nil, sees the cached items and the fetched changes before
+// they are merged: the only moment both old and new values are available.
 func syncResources[T any](path string, version int,
-	fetch func(since time.Time) ([]wanikani.Resource[T], error)) (map[int]wanikani.Resource[T], error) {
+	fetch func(since time.Time) ([]wanikani.Resource[T], error),
+	before func(old map[int]wanikani.Resource[T], fresh []wanikani.Resource[T])) (map[int]wanikani.Resource[T], error) {
 	var cache resourceCache[T]
 	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != version {
 		cache = resourceCache[T]{Version: version}
@@ -162,6 +196,9 @@ func syncResources[T any](path string, version int,
 	fresh, err := fetch(cache.SyncedAt)
 	if err != nil {
 		return nil, err
+	}
+	if before != nil {
+		before(cache.Items, fresh)
 	}
 	if cache.Items == nil {
 		cache.Items = map[int]wanikani.Resource[T]{}
@@ -177,14 +214,14 @@ func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[w
 	return syncResources(filepath.Join(b.dir, "subjects.json"), subjectCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Subject], error) {
 			return b.client.Subjects(ctx, since)
-		})
+		}, nil)
 }
 
 func (b *backend) syncAssignments(ctx context.Context) (map[int]wanikani.Resource[wanikani.Assignment], error) {
 	return syncResources(filepath.Join(b.dir, "assignments.json"), assignmentCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Assignment], error) {
 			return b.client.Assignments(ctx, since)
-		})
+		}, nil)
 }
 
 func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {

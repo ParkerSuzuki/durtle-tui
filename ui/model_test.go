@@ -392,6 +392,7 @@ func TestSkippedRadicalsNoted(t *testing.T) {
 }
 
 var sampleDash = dashboard.Dashboard{Level: 12, Lessons: 60, LessonsToday: 5, Reviews: 67,
+	Today: dashboard.Answers{Correct: 853, Incorrect: 147}, Yesterday: dashboard.Answers{Correct: 848, Incorrect: 152},
 	Forecast: []dashboard.Hour{{At: time.Date(2026, 9, 30, 15, 0, 0, 0, time.Local), Added: 12, Total: 79}},
 	Progress: dashboard.Progress{Radicals: 10, RadicalsPassed: 9, Kanji: 33, KanjiPassed: 21, KanjiNeeded: 30},
 	SRS:      dashboard.SRS{88, 143, 97, 201, 12}}
@@ -853,5 +854,20 @@ func TestStart403StopsLessonsEarly(t *testing.T) {
 	}
 	if m, _ = step(t, m, start()); m.screen != lessonSummary || m.lessonMode {
 		t.Errorf("after a 403: screen %v, lessonMode %v; want the lesson summary now", m.screen, m.lessonMode)
+	}
+}
+
+func TestAccuracyPanel(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = step(t, m, dashboardMsg{d: sampleDash})
+	got := stripANSI(m.View().Content)
+	for _, want := range []string{"Correct answers", "Today 85.3%", "(1000)", "Yesterday 84.8%", "Learning Zone"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("accuracy panel missing %q:\n%s", want, got)
+		}
+	}
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Level: 1}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "no reviews yet today") {
+		t.Errorf("empty accuracy not explained:\n%s", got)
 	}
 }

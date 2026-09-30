@@ -242,3 +242,11 @@ grant, longer).
 **Context:** New users of the public repo need a starting cap.
 **Decision:** 10 per day; the user sets theirs (1) once on the settings screen.
 **Why:** Moderate for most learners without flooding reviews a week later.
+
+## 29. Review accuracy from WaniKani's answer counters (2026-09-30)
+
+**Context:** The user wanted the website's "Correct Reviews: today / yesterday" widget. The API no longer stores individual reviews (`GET /reviews` is deprecated), so no endpoint returns daily accuracy.
+**Decision:** Cache `review_statistics` (per-subject meaning/reading correct and incorrect counters) with the same incremental sync as other caches. Every increase between syncs counts as answers on the local day of that statistic's last update; daily totals live in `accuracy.json` (last 30 days). The first sync is only a baseline. The dashboard shows today's and yesterday's percentage and a gauge against the Learning Zone, 85-95% per https://knowledge.wanikani.com/widgets/correct-percentage/.
+**Why:** It counts reviews done anywhere, website included. Answers are counted separately for meaning and reading, wrong attempts included, which is how the community reports WaniKani counts it (not confirmed by staff).
+**Known limits:** Answers since the last sync land on the day of the most recent update, so a day without opening durtle-tui is merged into the next. Reviews before the very first sync are never counted.
+**Passed on:** Logging only durtle-tui's own answers (exact, but blind to the website).

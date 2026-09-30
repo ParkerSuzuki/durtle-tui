@@ -98,3 +98,13 @@ type User struct {
 type Preferences struct {
 	LessonsBatchSize int `json:"lessons_batch_size"`
 }
+
+// ReviewStatistic is WaniKani's running answer count for one subject.
+type ReviewStatistic struct {
+	SubjectID        int  `json:"subject_id"`
+	MeaningCorrect   int  `json:"meaning_correct"`
+	MeaningIncorrect int  `json:"meaning_incorrect"`
+	ReadingCorrect   int  `json:"reading_correct"`
+	ReadingIncorrect int  `json:"reading_incorrect"`
+	Hidden           bool `json:"hidden"`
+}
