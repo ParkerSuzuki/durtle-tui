@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ParkerSuzuki/durtle-tui/dashboard"
@@ -28,10 +29,10 @@ import (
 
 // backend implements ui.Backend on top of the WaniKani API and local files.
 type backend struct {
-	dir    string // cache directory
-	base   string // API base URL
-	client *wanikani.Client
-	mu     sync.Mutex // guards pending.json and wkBatch; commands run concurrently
+	dir    string                          // cache directory
+	base   string                          // API base URL
+	client atomic.Pointer[wanikani.Client] // swapped by Login while commands run
+	mu     sync.Mutex                      // guards pending.json and wkBatch; commands run concurrently
 
 	wkBatch int // the user's WaniKani lesson batch size, once a sync has seen it
 }
@@ -51,10 +52,13 @@ const radicalArtPx = 20
 
 // resourceCache is the on-disk form of a synced collection.
 type resourceCache[T any] struct {
-	Version  int                          `json:"version"`
-	SyncedAt time.Time                    `json:"synced_at"`
-	Items    map[int]wanikani.Resource[T] `json:"items"`
+	Version int                          `json:"version"`
+	Items   map[int]wanikani.Resource[T] `json:"items"`
 }
+
+// syncOverlap re-asks for this much before the newest cached timestamp, so an
+// item updated while an earlier sync was paging through is not skipped.
+const syncOverlap = 5 * time.Minute
 
 type synonymCache struct {
 	SyncedAt time.Time        `json:"synced_at"`
@@ -72,7 +76,7 @@ func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
 	}
 	_, err := syncResources(filepath.Join(b.dir, "review_statistics.json"), statsCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.ReviewStatistic], error) {
-			return b.client.ReviewStatistics(ctx, since)
+			return b.api().ReviewStatistics(ctx, since)
 		},
 		func(old map[int]wanikani.Resource[wanikani.ReviewStatistic], fresh []wanikani.Resource[wanikani.ReviewStatistic]) {
 			dashboard.AddDeltas(days, old, fresh, time.Local)
@@ -96,9 +100,12 @@ func newest[T any](since time.Time, rs []wanikani.Resource[T]) time.Time {
 	return since
 }
 
+// api is the current WaniKani client.
+func (b *backend) api() *wanikani.Client { return b.client.Load() }
+
 // connect makes sure there is a client, loading the saved token if needed.
 func (b *backend) connect() error {
-	if b.client != nil {
+	if b.client.Load() != nil {
 		return nil
 	}
 	tok, err := store.LoadToken()
@@ -108,7 +115,7 @@ func (b *backend) connect() error {
 	if err != nil {
 		return err
 	}
-	b.client = wanikani.NewClient(b.base, tok)
+	b.client.Store(wanikani.NewClient(b.base, tok))
 	return nil
 }
 
@@ -130,11 +137,11 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	if err != nil {
 		return none, err
 	}
-	user, err := b.client.User(ctx)
+	user, err := b.api().User(ctx)
 	if err != nil {
 		return none, err
 	}
-	sum, err := b.client.Summary(ctx)
+	sum, err := b.api().Summary(ctx)
 	if err != nil {
 		return none, err
 	}
@@ -165,7 +172,7 @@ func (b *backend) Login(ctx context.Context, token string) error {
 	if err := store.SaveToken(token); err != nil {
 		return fmt.Errorf("saving token: %w", err)
 	}
-	b.client = c
+	b.client.Store(c)
 	return nil
 }
 
@@ -187,7 +194,7 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	assignments, err := b.client.ReviewAssignments(ctx)
+	assignments, err := b.api().ReviewAssignments(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -197,8 +204,10 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 }
 
 // syncResources loads a cached collection from path, fetches what changed
-// since the last sync (everything if the cache is missing, corrupt, or from
-// another version), merges by ID, and saves it back.
+// since the cache's newest server timestamp (everything if the cache is
+// missing, corrupt, or from another version), merges by ID, and saves it
+// back when anything actually changed. The cursor comes from WaniKani's own
+// data_updated_at values, so the local clock never matters.
 //
 // before, when not nil, sees the cached items and the fetched changes before
 // they are merged: the only moment both old and new values are available.
@@ -209,7 +218,16 @@ func syncResources[T any](path string, version int,
 	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != version {
 		cache = resourceCache[T]{Version: version}
 	}
-	fresh, err := fetch(cache.SyncedAt)
+	var since time.Time
+	for _, r := range cache.Items {
+		if r.DataUpdatedAt.After(since) {
+			since = r.DataUpdatedAt
+		}
+	}
+	if !since.IsZero() {
+		since = since.Add(-syncOverlap)
+	}
+	fresh, err := fetch(since)
 	if err != nil {
 		return nil, err
 	}
@@ -219,12 +237,16 @@ func syncResources[T any](path string, version int,
 	if cache.Items == nil {
 		cache.Items = map[int]wanikani.Resource[T]{}
 	}
+	changed := false
 	for _, r := range fresh {
+		if old, ok := cache.Items[r.ID]; !ok || !old.DataUpdatedAt.Equal(r.DataUpdatedAt) {
+			changed = true
+		}
 		cache.Items[r.ID] = r
 	}
-	cache.SyncedAt = newest(cache.SyncedAt, fresh)
-	if len(fresh) == 0 {
-		// Nothing changed: skip rewriting the file (subjects.json is ~15 MB).
+	if !changed {
+		// The overlap re-fetches recent items; only rewrite when something is
+		// new (subjects.json is ~15 MB).
 		// ponytail: the file is still read on every refresh (~0.25 s for
 		// subjects); keep the maps in memory if refreshes ever feel slow.
 		return cache.Items, nil
@@ -235,14 +257,14 @@ func syncResources[T any](path string, version int,
 func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[wanikani.Subject], error) {
 	return syncResources(filepath.Join(b.dir, "subjects.json"), subjectCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Subject], error) {
-			return b.client.Subjects(ctx, since)
+			return b.api().Subjects(ctx, since)
 		}, nil)
 }
 
 func (b *backend) syncAssignments(ctx context.Context) (map[int]wanikani.Resource[wanikani.Assignment], error) {
 	return syncResources(filepath.Join(b.dir, "assignments.json"), assignmentCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.Assignment], error) {
-			return b.client.Assignments(ctx, since)
+			return b.api().Assignments(ctx, since)
 		}, nil)
 }
 
@@ -252,7 +274,7 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	if err := store.ReadJSON(path, &cache); err != nil {
 		cache = synonymCache{}
 	}
-	fresh, err := b.client.StudyMaterials(ctx, cache.SyncedAt)
+	fresh, err := b.api().StudyMaterials(ctx, cache.SyncedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -272,10 +294,15 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 // true when it could not be sent now. err is non-nil when WaniKani refused
 // the review or the pending file could not be written.
 func (b *backend) Submit(ctx context.Context, s review.Submission) (pending bool, err error) {
+	if s.CompletedAt.IsZero() {
+		s.CompletedAt = time.Now().UTC()
+	}
 	if err := b.editPending(func(list []review.Submission) []review.Submission { return append(list, s) }); err != nil {
 		return false, err
 	}
-	err = b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
+	// The first send lets the server stamp the time: a local clock running
+	// ahead would make WaniKani refuse a created_at in its future.
+	err = b.api().SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading, time.Time{})
 	if err != nil && !rejected(err) {
 		var apiErr *wanikani.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 403 {
@@ -284,7 +311,9 @@ func (b *backend) Submit(ctx context.Context, s review.Submission) (pending bool
 		return true, nil // stays in pending.json
 	}
 	if rerr := b.editPending(func(list []review.Submission) []review.Submission {
-		if i := slices.Index(list, s); i >= 0 {
+		if i := slices.IndexFunc(list, func(p review.Submission) bool {
+			return p.AssignmentID == s.AssignmentID && p.CompletedAt.Equal(s.CompletedAt)
+		}); i >= 0 {
 			return slices.Delete(list, i, i+1)
 		}
 		return list
@@ -319,7 +348,7 @@ func (b *backend) flushPending(ctx context.Context) error {
 	}
 	var keep []review.Submission
 	for i, s := range list {
-		err := b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
+		err := b.api().SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading, s.CompletedAt)
 		if errors.Is(err, wanikani.ErrUnauthorized) {
 			// Keep this answer and the untried ones for after a new token;
 			// drop the ones already accepted so they are not sent twice.
@@ -579,11 +608,11 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 	if err != nil {
 		return none, err
 	}
-	user, err := b.client.User(ctx)
+	user, err := b.api().User(ctx)
 	if err != nil {
 		return none, err
 	}
-	sum, err := b.client.Summary(ctx)
+	sum, err := b.api().Summary(ctx)
 	if err != nil {
 		return none, err
 	}
@@ -644,5 +673,5 @@ func (b *backend) StartLesson(ctx context.Context, assignmentID int) error {
 	if err := b.connect(); err != nil {
 		return err
 	}
-	return b.client.StartAssignment(ctx, assignmentID)
+	return b.api().StartAssignment(ctx, assignmentID)
 }

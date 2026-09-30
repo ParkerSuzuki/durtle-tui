@@ -26,7 +26,7 @@ func updatedAfter(path string, t time.Time) string {
 	if t.IsZero() {
 		return path
 	}
-	return path + "?updated_after=" + url.QueryEscape(t.UTC().Format(time.RFC3339))
+	return path + "?updated_after=" + url.QueryEscape(t.UTC().Format(time.RFC3339Nano))
 }
 
 // User fetches the token owner's profile. Used to check a token is valid.
@@ -63,13 +63,19 @@ func (c *Client) Assignments(ctx context.Context, t time.Time) ([]Resource[Assig
 	return getAll[Assignment](ctx, c, updatedAfter("assignments", t))
 }
 
-// SubmitReview records a finished review for one assignment.
-func (c *Client) SubmitReview(ctx context.Context, assignmentID, incorrectMeaning, incorrectReading int) error {
-	body := map[string]any{"review": map[string]int{
+// SubmitReview records a finished review for one assignment. A non-zero
+// createdAt is sent as the review's completion time (WaniKani requires it to
+// be after the assignment's available_at); zero lets the server stamp it.
+func (c *Client) SubmitReview(ctx context.Context, assignmentID, incorrectMeaning, incorrectReading int, createdAt time.Time) error {
+	review := map[string]any{
 		"assignment_id":             assignmentID,
 		"incorrect_meaning_answers": incorrectMeaning,
 		"incorrect_reading_answers": incorrectReading,
-	}}
+	}
+	if !createdAt.IsZero() {
+		review["created_at"] = createdAt.UTC().Format(time.RFC3339Nano)
+	}
+	body := map[string]any{"review": review}
 	return c.do(ctx, http.MethodPost, c.base+"reviews", body, nil)
 }
 

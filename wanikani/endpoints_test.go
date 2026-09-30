@@ -52,21 +52,24 @@ func TestSubmitReviewBody(t *testing.T) {
 			t.Errorf("request = %s %s", r.Method, r.URL)
 		}
 		var body struct {
-			Review map[string]int `json:"review"`
+			Review map[string]any `json:"review"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]int{"assignment_id": 9, "incorrect_meaning_answers": 1, "incorrect_reading_answers": 2}
+		want := map[string]any{"assignment_id": 9.0, "incorrect_meaning_answers": 1.0, "incorrect_reading_answers": 2.0}
 		for k, v := range want {
 			if body.Review[k] != v {
-				t.Errorf("%s = %d, want %d", k, body.Review[k], v)
+				t.Errorf("%s = %v, want %v", k, body.Review[k], v)
 			}
+		}
+		if _, ok := body.Review["created_at"]; ok {
+			t.Error("a first send must let the server stamp the time")
 		}
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, `{}`)
 	})
-	if err := c.SubmitReview(context.Background(), 9, 1, 2); err != nil {
+	if err := c.SubmitReview(context.Background(), 9, 1, 2, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -160,5 +163,25 @@ func TestReviewStatistics(t *testing.T) {
 	}
 	if s := got[0].Data; s.SubjectID != 7 || s.MeaningCorrect != 5 || s.MeaningIncorrect != 1 || s.ReadingCorrect != 4 || s.ReadingIncorrect != 2 {
 		t.Errorf("decoded %+v", s)
+	}
+}
+
+// A resend carries the original completion time: WaniKani refuses a review
+// whose created_at is before the assignment's current available_at, so a
+// stale resend cannot count as a new review.
+func TestSubmitReviewCreatedAt(t *testing.T) {
+	at := time.Date(2026, 9, 30, 10, 11, 12, 345000000, time.UTC)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Review map[string]any `json:"review"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Review["created_at"] != "2026-09-30T10:11:12.345Z" {
+			t.Errorf("created_at = %v", body.Review["created_at"])
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+	if err := c.SubmitReview(context.Background(), 9, 0, 0, at); err != nil {
+		t.Fatal(err)
 	}
 }

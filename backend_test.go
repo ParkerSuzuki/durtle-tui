@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -69,7 +70,7 @@ func fakeAPI(t *testing.T, statuses ...int) (*backend, *int) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	return b, &calls
 }
 
@@ -95,7 +96,7 @@ func TestSubmitPendingAndRejected(t *testing.T) {
 	if pending, err := b.Submit(ctx, sub); !pending || err != nil {
 		t.Errorf("5xx: pending=%v err=%v, want saved for later", pending, err)
 	}
-	if got := readPending(t, b); len(got) != 1 || got[0] != sub {
+	if got := readPending(t, b); len(got) != 1 || got[0].AssignmentID != sub.AssignmentID || got[0].IncorrectMeaning != sub.IncorrectMeaning {
 		t.Errorf("pending.json = %v", got)
 	}
 
@@ -153,7 +154,7 @@ func TestOldSubjectCacheForcesFullSync(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	old := map[string]any{"synced_at": "2026-09-01T00:00:00Z", "subjects": map[string]any{}}
 	if err := store.WriteJSON(filepath.Join(b.dir, "subjects.json"), old); err != nil {
 		t.Fatal(err)
@@ -243,7 +244,7 @@ func TestDashboard(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 
 	d, err := b.Dashboard(context.Background())
 	if err != nil {
@@ -270,7 +271,7 @@ func TestOldAssignmentCacheForcesFullSync(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	old := map[string]any{"version": 0, "synced_at": "2026-09-01T00:00:00Z", "items": map[string]any{}}
 	if err := store.WriteJSON(filepath.Join(b.dir, "assignments.json"), old); err != nil {
 		t.Fatal(err)
@@ -330,7 +331,7 @@ func lessonServer(t *testing.T, startedToday bool) *backend {
 	t.Cleanup(srv.Close)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	return b
 }
 
@@ -390,7 +391,7 @@ func TestStartLesson(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	if err := b.StartLesson(context.Background(), 7); err != nil || path != "PUT /assignments/7/start" {
 		t.Errorf("StartLesson: %q, %v", path, err)
 	}
@@ -415,7 +416,7 @@ func TestAccuracyAcrossSyncs(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 
 	d, err := b.Dashboard(context.Background())
 	if err != nil || d.Today.Total() != 0 {
@@ -427,29 +428,40 @@ func TestAccuracyAcrossSyncs(t *testing.T) {
 	}
 }
 
-// Incremental sync asks for changes after WaniKani's own newest timestamp,
-// not the local clock, so a skewed clock cannot skip updates.
-func TestSyncUsesServerTimestamps(t *testing.T) {
+// Incremental sync resumes from WaniKani's own newest timestamp (full
+// precision), minus an overlap so an item updated mid-sync is not skipped.
+// Re-fetching unchanged items must not rewrite the ~15 MB cache.
+func TestSyncCursorAndChangeDetection(t *testing.T) {
+	newest := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	var queries []string
-	stamp := "2026-01-02T03:04:05Z"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		queries = append(queries, r.URL.Query().Get("updated_after"))
-		if len(queries) == 1 {
-			fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":%q,"data":{}}]}`, stamp)
+		after := r.URL.Query().Get("updated_after")
+		queries = append(queries, after)
+		since, _ := time.Parse(time.RFC3339Nano, after)
+		if after == "" || newest.After(since) { // the server compares at full precision
+			fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":%q,"data":{}}]}`,
+				newest.Format(time.RFC3339Nano))
 			return
 		}
 		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
-	for range 3 {
-		if _, err := b.syncSubjects(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if queries[0] != "" || queries[1] != stamp || queries[2] != stamp {
-		t.Errorf("updated_after per sync = %q; want \"\", then the server's newest timestamp twice", queries)
+	path := filepath.Join(b.dir, "subjects.json")
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(path, past, past)
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := newest.Add(-syncOverlap).Format(time.RFC3339Nano); queries[1] != want {
+		t.Errorf("second sync asked updated_after=%q, want %q", queries[1], want)
+	}
+	if info, _ := os.Stat(path); !info.ModTime().Equal(past) {
+		t.Errorf("a sync that changed nothing rewrote the cache")
 	}
 }
 
@@ -480,12 +492,12 @@ func TestSubmitWritesAhead(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	b = &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
 	sub := review.Submission{AssignmentID: 9, IncorrectMeaning: 1}
 	if pending, err := b.Submit(context.Background(), sub); pending || err != nil {
 		t.Fatalf("pending=%v err=%v", pending, err)
 	}
-	if len(onDisk) != 1 || onDisk[0] != sub {
+	if len(onDisk) != 1 || onDisk[0].AssignmentID != sub.AssignmentID || onDisk[0].IncorrectMeaning != sub.IncorrectMeaning || onDisk[0].CompletedAt.IsZero() {
 		t.Errorf("while sending, pending.json = %v; want the answer saved first", onDisk)
 	}
 	if got := readPending(t, b); len(got) != 0 {
@@ -531,29 +543,63 @@ func TestSettingsFileHandling(t *testing.T) {
 	}
 }
 
-// A sync that brings no changes must not rewrite the cache file (the subject
-// cache is about 15 MB; rewriting it on every refresh wastes time).
-func TestSyncWithoutChangesDoesNotRewrite(t *testing.T) {
+// Saved answers carry their completion time; only resends send it.
+func TestResendCarriesCompletionTime(t *testing.T) {
+	var createdAt []any
+	status := http.StatusInternalServerError
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("updated_after") == "" {
-			fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":"2026-01-02T00:00:00Z","data":{}}]}`)
-			return
+		var body struct {
+			Review map[string]any `json:"review"`
 		}
-		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+		json.NewDecoder(r.Body).Decode(&body)
+		createdAt = append(createdAt, body.Review["created_at"])
+		w.WriteHeader(status)
 	}))
 	t.Cleanup(srv.Close)
 	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
-	b.client = wanikani.NewClient(b.base, "tok")
-	if _, err := b.syncSubjects(context.Background()); err != nil {
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+	if pending, _ := b.Submit(context.Background(), review.Submission{AssignmentID: 4}); !pending {
+		t.Fatal("5xx should leave the answer pending")
+	}
+	saved := readPending(t, b)
+	if len(saved) != 1 || saved[0].CompletedAt.IsZero() {
+		t.Fatalf("pending.json = %+v; want the completion time recorded", saved)
+	}
+	status = http.StatusCreated
+	if err := b.flushPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(b.dir, "subjects.json")
-	past := time.Now().Add(-time.Hour)
-	os.Chtimes(path, past, past)
-	if _, err := b.syncSubjects(context.Background()); err != nil {
+	if createdAt[0] != nil || createdAt[1] != saved[0].CompletedAt.Format(time.RFC3339Nano) {
+		t.Errorf("created_at sent = %v; want none on the first send, the saved time on the resend", createdAt)
+	}
+	if got := readPending(t, b); len(got) != 0 {
+		t.Errorf("after the resend, pending.json = %v", got)
+	}
+}
+
+// Logging in (token re-entry) while answers are sending must not race on the
+// client; run with -race.
+func TestLoginDuringSubmitIsRaceFree(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keyring.MockInit()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/reviews" {
+			<-release
+		}
+		fmt.Fprint(w, `{"data":{"level":1}}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "old"))
+	done := make(chan struct{})
+	go func() {
+		b.Submit(context.Background(), review.Submission{AssignmentID: 1})
+		close(done)
+	}()
+	if err := b.Login(context.Background(), "new"); err != nil {
 		t.Fatal(err)
 	}
-	if info, _ := os.Stat(path); !info.ModTime().Equal(past) {
-		t.Errorf("unchanged sync rewrote the cache (mtime %v)", info.ModTime())
-	}
+	close(release)
+	<-done
 }
