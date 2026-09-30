@@ -19,10 +19,16 @@ type page[T any] struct {
 }
 
 type Subject struct {
-	Characters        *string      `json:"characters"` // nil for image-only radicals
-	Meanings          []Meaning    `json:"meanings"`
-	AuxiliaryMeanings []AuxMeaning `json:"auxiliary_meanings"`
-	Readings          []Reading    `json:"readings"`
+	Characters        *string          `json:"characters"` // nil for image-only radicals
+	Meanings          []Meaning        `json:"meanings"`
+	AuxiliaryMeanings []AuxMeaning     `json:"auxiliary_meanings"`
+	Readings          []Reading        `json:"readings"`
+	CharacterImages   []CharacterImage `json:"character_images"` // for radicals with no characters
+}
+
+type CharacterImage struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type"` // only image/svg+xml still downloads
 }
 
 type Meaning struct {

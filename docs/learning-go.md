@@ -499,3 +499,49 @@ them.
 **`ponytail:` comments** mark a deliberate shortcut with its limit and
 upgrade path, so the next person (or a Bubble Tea upgrade) knows exactly
 what to check.
+
+## 11. Running other programs, images, and passing functions in
+
+Code: [backend.go](../backend.go) (`radicalImage`, `download`, `buildItems`), [ui/view.go](../ui/view.go) (`halfBlocks`)
+
+**`os/exec` runs another program.** `exec.CommandContext(ctx, "rsvg-convert",
+"-w", "20", "-h", "20", path).Output()` starts the tool, waits, and returns
+its stdout as `[]byte`. Arguments are passed as separate strings, never
+through a shell, so a file name can never be misread as extra commands. If
+the program is not installed, `Output` returns an error, which is how
+durtle-tui notices and skips the radical instead of crashing. The `ctx`
+kills the tool if the load is cancelled.
+
+**The `image` package is an interface.** `image.Image` is any type with
+`Bounds()`, `ColorModel()` and `At(x, y)`. `png.Decode` returns one;
+the tests build tiny ones with `image.NewAlpha`. `halfBlocks` only calls
+`At(...).RGBA()` and reads the alpha channel, so it works on any image
+from any source, which is interfaces paying off again.
+
+**`bytes.NewReader` adapts a `[]byte` into an `io.Reader`.** `png.Decode`
+wants a reader (a stream), `Output` gives bytes (a buffer); the adapter
+bridges them without copying. The `io.Reader` interface (one method,
+`Read`) is the most reused abstraction in Go: files, network bodies,
+buffers and decompressors all speak it.
+
+**`io.LimitReader`** caps a download at 1 MB, so a misbehaving server
+cannot fill memory. Defensive, and one line.
+
+**Passing a function as a parameter.** `buildItems` needs a picture for
+image-only radicals but should stay free of network and disk work, so it
+takes `art func(wanikani.Resource[wanikani.Subject]) image.Image`. The real
+backend passes a closure over `ctx` that downloads and rasterizes; the test
+passes `func(...) image.Image { return pic }`. A one-function dependency does
+not need an interface; a function type is lighter.
+
+**Named results as documentation.** `buildItems(...) (items
+[]review.Item, skipped int)` says what each returned value means, and
+`items` starts as a nil slice that `append` grows.
+
+**`if x = f(); x == nil`** assigns and tests in one statement. It is used as
+`else if it.Image = art(s); it.Image == nil { skipped++; continue }`.
+
+**Versioning a cache.** Adding a field to a struct does not update JSON
+files written before it existed; the old files simply lack the key. A
+`Version` constant stored in the file, compared on load, turns "silently
+missing data forever" into "one full resync".

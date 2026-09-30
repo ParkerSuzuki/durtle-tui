@@ -1,5 +1,7 @@
 package review
 
+import "image"
+
 // Part is which half of an item is being asked.
 type Part int
 
@@ -23,9 +25,10 @@ type Item struct {
 	Characters    string
 	Meanings      []string // accepted answers, primary first
 	Blacklist     []string
-	Readings      []string // accepted answers, primary first; empty means meaning only
-	OtherReadings []string // kanji readings WaniKani knows but is not asking for
-	ReadingKind   string   // "on'yomi", "kun'yomi", "nanori", or ""
+	Readings      []string    // accepted answers, primary first; empty means meaning only
+	OtherReadings []string    // kanji readings WaniKani knows but is not asking for
+	ReadingKind   string      // "on'yomi", "kun'yomi", "nanori", or ""
+	Image         image.Image // radicals with no Unicode character; Characters is ""
 }
 
 // HasReading reports whether this item asks for a reading at all.

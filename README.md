@@ -20,6 +20,10 @@ durtle-tui
 On first run, paste a WaniKani personal access token with the
 `reviews:create` permission. It is stored in your OS keyring.
 
+Optional: install `rsvg-convert` (package `librsvg`, or `librsvg2-bin` on
+Debian/Ubuntu) to review the radicals that have no Unicode character. Without
+it they are skipped and left for the website.
+
 ## Docs
 
 - [Design](docs/superpowers/specs/2026-09-29-durtle-design.md) for milestone 1

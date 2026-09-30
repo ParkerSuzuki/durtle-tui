@@ -67,6 +67,7 @@ website. Tracked in TODO.md.
 **Why:** Rendering them needs SVG rasterizing plus the kitty graphics protocol,
 which is a milestone of its own.
 **Passed on:** Opening the SVG in a browser (clunky); pulling images into milestone 1.
+**Superseded 2026-09-30 by decision 20:** image-only radicals are now drawn.
 
 ## 7. Own romaji to kana converter (2026-09-29)
 
@@ -179,3 +180,10 @@ grant, longer).
 **Passed on:** A taller block only (decision 18 stays as the fallback); putting OSC 66 in the view (stripped by the renderer).
 
 **Revised 2026-09-30:** Detection first used `KITTY_WINDOW_ID`, which herdr (and tmux) inherit from the outer kitty while dropping OSC 66, leaving an empty block. It now checks `TERM=xterm-kitty`, which any multiplexer in between replaces.
+
+## 20. Image-only radicals drawn as half-block art via rsvg-convert (2026-09-30)
+
+**Context:** 19 of 504 radicals have no Unicode character. The API lists PNG and SVG images, but the PNG links now return 403; only SVG downloads.
+**Decision:** The backend downloads a due radical's SVG once into `~/.cache/durtle-tui/radicals/`, with no API token (it is a public file host). The `rsvg-convert` command rasterizes it to a 20x20 PNG, Go's `image/png` decodes it, and the UI draws it as 10 rows of half-block characters (▀ ▄ █) in a block that grows from 7 to 10 rows for these items. Without `rsvg-convert` (or on a failed download) the radical is skipped and the summary says so. The subject cache gained a version number so the new image field forces one full resync.
+**Why:** Half-blocks work in every terminal, including herdr. `rsvg-convert` is already installed on this machine and needs no new Go dependencies. The 10-row size was chosen from rendered previews; 7 rows was recognizable but rough.
+**Passed on:** A pure-Go SVG library (two new modules, and likely unable to read WaniKani's CSS-styled SVGs without rewriting them); a kitty graphics image (sharpest, but kitty only and not in herdr; could be layered on later); shipping pre-rendered images in the repo (redistributes WaniKani artwork, which the API terms forbid).

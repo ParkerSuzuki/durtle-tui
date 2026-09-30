@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -88,11 +89,15 @@ func (m Model) reviewView() string {
 	if w := m.innerWidth(); w > 0 {
 		// Span the terminal, content centered. Styles are values, so these
 		// calls change local copies, not the shared package-level styles.
-		shown := item.Characters
-		if m.bigScale(shown) > 0 {
+		shown, style := item.Characters, charStyle
+		switch {
+		case item.Image != nil:
+			// The picture fills the block: 10 rows, no top or bottom padding.
+			shown, style = strings.Join(halfBlocks(item.Image), "\n"), style.Padding(0, 4)
+		case m.bigScale(shown) > 0:
 			shown = " " // leave the row empty; bigCharsSeq draws on top
 		}
-		chars = charStyle.Width(w).Align(lipgloss.Center).Render(shown)
+		chars = style.Width(w).Align(lipgloss.Center).Render(shown)
 		bar = bar.Width(w).Align(lipgloss.Center)
 	}
 	prompt := bar.Render(fmt.Sprintf("%s %s", typeLabel(item.Type), part))
@@ -111,7 +116,7 @@ func (m Model) reviewView() string {
 // bigScale is the largest kitty text scale (3, then 2) at which chars fit
 // in the block, or 0 to draw them at normal size.
 func (m Model) bigScale(chars string) int {
-	if !m.bigText {
+	if !m.bigText || chars == "" { // "" is an image-only radical
 		return 0
 	}
 	for _, s := range []int{3, 2} {
@@ -169,6 +174,32 @@ func (m Model) bigCharsSeq() string {
 	return sb.String()
 }
 
+// halfBlocks draws img with ▀ ▄ █, two pixel rows per text row. A pixel
+// counts as ink when it is mostly opaque: radical images are dark strokes on
+// a transparent background.
+func halfBlocks(img image.Image) []string {
+	b := img.Bounds()
+	ink := func(x, y int) int {
+		if y >= b.Max.Y {
+			return 0
+		}
+		if _, _, _, a := img.At(x, y).RGBA(); a > 0x8000 {
+			return 1
+		}
+		return 0
+	}
+	glyphs := [4]string{" ", "▄", "▀", "█"} // index: top*2 + bottom
+	var rows []string
+	for y := b.Min.Y; y < b.Max.Y; y += 2 {
+		var sb strings.Builder
+		for x := b.Min.X; x < b.Max.X; x++ {
+			sb.WriteString(glyphs[ink(x, y)*2+ink(x, y+1)])
+		}
+		rows = append(rows, sb.String())
+	}
+	return rows
+}
+
 // answerView centers the typed answer under the prompt bar. The input is
 // sized to its text (plus one cell for the cursor) so centering the field
 // centers the text, and it grows from the middle as you type.
@@ -192,7 +223,11 @@ func (m Model) summaryView() string {
 	var missed []string
 	for _, r := range results {
 		if r.Submission.IncorrectMeaning+r.Submission.IncorrectReading > 0 {
-			missed = append(missed, r.Item.Characters)
+			name := r.Item.Characters
+			if name == "" {
+				name = "(" + r.Item.Meanings[0] + " radical)"
+			}
+			missed = append(missed, name)
 		}
 	}
 	if len(missed) > 0 {
@@ -206,6 +241,9 @@ func (m Model) summaryView() string {
 	}
 	if m.rejected > 0 {
 		lines = append(lines, fmt.Sprintf("%d refused by WaniKani (probably already reviewed elsewhere).", m.rejected))
+	}
+	if m.skipped > 0 {
+		lines = append(lines, fmt.Sprintf("%d radicals with no character were skipped: they need rsvg-convert to draw (review them on the website).", m.skipped))
 	}
 	if m.lost > 0 {
 		lines = append(lines, fmt.Sprintf("%d could not be sent or saved (%v). Redo them on the website.", m.lost, m.lostErr))

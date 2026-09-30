@@ -2,7 +2,7 @@
 
 Deferred past milestone 1. Each item gets its own design discussion before work starts.
 
-- [ ] Image-only radicals: rasterize the SVG and draw it with the kitty graphics protocol (decision 6).
+- [ ] Sharper radical images in kitty via the graphics protocol (half-block art works everywhere; decision 20).
 - [ ] Lessons: teaching screens plus `PUT /assignments/<id>/start`.
 - [ ] Dashboard: level progress, upcoming review forecast, counts by SRS stage.
 - [ ] Audio: play vocab pronunciation with `mpv` after a correct reading.

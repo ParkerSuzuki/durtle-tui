@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,7 +29,16 @@ type backend struct {
 	mu     sync.Mutex // guards pending.json; submits run concurrently
 }
 
+// subjectCacheVersion changes whenever wanikani.Subject gains fields, so an
+// older cache (which never stored them) is refetched in full.
+const subjectCacheVersion = 2
+
+// radicalArtPx is the size radical images are rasterized to: 20 columns by
+// 10 rows of half-block characters.
+const radicalArtPx = 20
+
 type subjectCache struct {
+	Version  int                                         `json:"version"`
 	SyncedAt time.Time                                   `json:"synced_at"`
 	Subjects map[int]wanikani.Resource[wanikani.Subject] `json:"subjects"`
 }
@@ -46,42 +62,45 @@ func (b *backend) Login(ctx context.Context, token string) error {
 	return nil
 }
 
-// Load sends any saved answers, syncs, and returns the items due for review.
-// It returns wanikani.ErrUnauthorized when there is no token or it was rejected.
-func (b *backend) Load(ctx context.Context) ([]review.Item, error) {
+// Load sends any saved answers, syncs, and returns the items due for review,
+// plus how many image-only radicals had to be skipped. It returns
+// wanikani.ErrUnauthorized when there is no token or it was rejected.
+func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	if b.client == nil {
 		tok, err := store.LoadToken()
 		if errors.Is(err, store.ErrNoToken) {
-			return nil, wanikani.ErrUnauthorized
+			return nil, 0, wanikani.ErrUnauthorized
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		b.client = wanikani.NewClient(b.base, tok)
 	}
 	if err := b.flushPending(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	subjects, err := b.syncSubjects(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	synonyms, err := b.syncSynonyms(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	assignments, err := b.client.ReviewAssignments(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return buildItems(assignments, subjects, synonyms), nil
+	art := func(s wanikani.Resource[wanikani.Subject]) image.Image { return b.radicalImage(ctx, s) }
+	items, skipped := buildItems(assignments, subjects, synonyms, art)
+	return items, skipped, nil
 }
 
 func (b *backend) syncSubjects(ctx context.Context) (map[int]wanikani.Resource[wanikani.Subject], error) {
 	path := filepath.Join(b.dir, "subjects.json")
 	var cache subjectCache
-	if err := store.ReadJSON(path, &cache); err != nil {
-		cache = subjectCache{} // corrupt cache: start over with a full sync
+	if err := store.ReadJSON(path, &cache); err != nil || cache.Version != subjectCacheVersion {
+		cache = subjectCache{Version: subjectCacheVersion} // corrupt or old: full sync
 	}
 	started := time.Now()
 	fresh, err := b.client.Subjects(ctx, cache.SyncedAt)
@@ -180,16 +199,23 @@ func rejected(err error) bool {
 }
 
 // buildItems joins due assignments with their subjects and the user's
-// synonyms. Image-only radicals are skipped for now (decision 6).
+// synonyms. Radicals with no Unicode character get a picture from art; when
+// art returns nil they are skipped and counted.
 func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
-	subjects map[int]wanikani.Resource[wanikani.Subject], synonyms map[int][]string) []review.Item {
-	var items []review.Item
+	subjects map[int]wanikani.Resource[wanikani.Subject], synonyms map[int][]string,
+	art func(wanikani.Resource[wanikani.Subject]) image.Image) (items []review.Item, skipped int) {
 	for _, a := range assignments {
 		s, ok := subjects[a.Data.SubjectID]
-		if !ok || s.Data.Characters == nil {
+		if !ok {
 			continue
 		}
-		it := review.Item{AssignmentID: a.ID, Type: s.Object, Characters: *s.Data.Characters}
+		it := review.Item{AssignmentID: a.ID, Type: s.Object}
+		if s.Data.Characters != nil {
+			it.Characters = *s.Data.Characters
+		} else if it.Image = art(s); it.Image == nil {
+			skipped++
+			continue
+		}
 		for _, m := range s.Data.Meanings {
 			switch {
 			case m.AcceptedAnswer && m.Primary:
@@ -220,7 +246,68 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 		}
 		items = append(items, it)
 	}
-	return items
+	return items, skipped
+}
+
+// radicalImage returns the picture for a radical with no Unicode character:
+// its SVG, downloaded once into the cache, rasterized by rsvg-convert (see
+// decision 20). It returns nil when that is not possible, for example when
+// rsvg-convert is not installed or the download fails.
+func (b *backend) radicalImage(ctx context.Context, s wanikani.Resource[wanikani.Subject]) image.Image {
+	var url string
+	for _, ci := range s.Data.CharacterImages {
+		if ci.ContentType == "image/svg+xml" {
+			url = ci.URL
+		}
+	}
+	if url == "" {
+		return nil
+	}
+	path := filepath.Join(b.dir, "radicals", fmt.Sprintf("%d.svg", s.ID))
+	if _, err := os.Stat(path); err != nil {
+		if err := download(ctx, url, path); err != nil {
+			return nil
+		}
+	}
+	size := fmt.Sprint(radicalArtPx)
+	out, err := exec.CommandContext(ctx, "rsvg-convert", "-w", size, "-h", size, path).Output()
+	if err != nil {
+		return nil
+	}
+	img, err := png.Decode(bytes.NewReader(out))
+	if err != nil {
+		return nil
+	}
+	return img
+}
+
+// download saves url to path. It sends no API token: images live on a
+// public file host, and the token should only ever go to the API.
+func download(ctx context.Context, url, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downloading %s: %s", url, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp" // write then rename: a cut-off download never looks cached
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func readingKind(t string) string {

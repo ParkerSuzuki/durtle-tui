@@ -17,7 +17,7 @@ import (
 // Backend is everything the UI needs from the outside world.
 type Backend interface {
 	Login(ctx context.Context, token string) error
-	Load(ctx context.Context) ([]review.Item, error)
+	Load(ctx context.Context) (items []review.Item, skipped int, err error)
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 }
 
@@ -36,8 +36,9 @@ const (
 
 type (
 	loadedMsg struct {
-		items []review.Item
-		err   error
+		items   []review.Item
+		skipped int // image-only radicals that could not be drawn
+		err     error
 	}
 	loginMsg     struct{ err error }
 	drawBigMsg   struct{}
@@ -61,6 +62,7 @@ type Model struct {
 	rejected      int   // refused by WaniKani
 	lost          int   // could not be sent or saved
 	lostErr       error // why the last one was lost
+	skipped       int   // image-only radicals left for the website
 	quitting      bool
 	width         int
 	bigText       bool   // draw characters with kitty's text sizing protocol
@@ -82,8 +84,8 @@ func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		items, err := m.backend.Load(ctx)
-		return loadedMsg{items, err}
+		items, skipped, err := m.backend.Load(ctx)
+		return loadedMsg{items, skipped, err}
 	}
 }
 
@@ -203,6 +205,7 @@ func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 	}
+	m.skipped = msg.skipped
 	m.session = review.NewSession(msg.items, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	m.screen = reviewing
 	if _, _, ok := m.session.Current(); !ok {

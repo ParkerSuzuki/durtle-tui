@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,8 +25,8 @@ type fakeBackend struct {
 }
 
 func (f *fakeBackend) Login(context.Context, string) error { return nil }
-func (f *fakeBackend) Load(context.Context) ([]review.Item, error) {
-	return f.items, f.loadErr
+func (f *fakeBackend) Load(context.Context) ([]review.Item, int, error) {
+	return f.items, 0, f.loadErr
 }
 func (f *fakeBackend) Submit(_ context.Context, s review.Submission) (bool, error) {
 	f.submitted = append(f.submitted, s)
@@ -317,5 +319,49 @@ func TestTypingDoesNotRedrawBigChars(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestHalfBlocks(t *testing.T) {
+	// 3 wide, 4 tall: column 0 all ink, column 1 top half, column 2 bottom half.
+	img := image.NewAlpha(image.Rect(0, 0, 3, 4))
+	for y := 0; y < 4; y++ {
+		img.SetAlpha(0, y, color.Alpha{255})
+	}
+	img.SetAlpha(1, 0, color.Alpha{255}) // top pixel of the first text row
+	img.SetAlpha(2, 3, color.Alpha{255}) // bottom pixel of the second
+	want := []string{"█▀ ", "█ ▄"}
+	if got := halfBlocks(img); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("halfBlocks = %q, want %q", got, want)
+	}
+}
+
+func TestImageRadicalReview(t *testing.T) {
+	img := image.NewAlpha(image.Rect(0, 0, 20, 20))
+	for x := 0; x < 20; x++ {
+		img.SetAlpha(x, 8, color.Alpha{255}) // even row: top half of text row 4
+	}
+	beggar := review.Item{AssignmentID: 9, Type: "radical", Meanings: []string{"Beggar"}, Image: img}
+	for _, big := range []bool{false, true} {
+		m, _ := step(t, New(&fakeBackend{}, big), loadedMsg{items: []review.Item{beggar}})
+		m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 40})
+		lines := strings.Split(stripANSI(m.View().Content), "\n")
+		top, bar := lineIndex(lines, "done"), lineIndex(lines, "Radical meaning")
+		if gap := bar - top - 1; gap != 10+2 {
+			t.Errorf("big=%v: %d lines between progress and prompt, want the 10-row image plus 2 blank lines", big, gap)
+		}
+		if lineIndex(lines, "▀▀▀▀▀▀▀▀▀▀") < 0 {
+			t.Errorf("big=%v: the image is not drawn", big)
+		}
+		if m.bigCharsSeq() != "" {
+			t.Errorf("big=%v: image radicals must not use kitty big text", big)
+		}
+	}
+}
+
+func TestSkippedRadicalsNoted(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: nil, skipped: 2})
+	if got := m.View().Content; !strings.Contains(got, "2 radicals") || !strings.Contains(got, "rsvg-convert") {
+		t.Errorf("summary should say 2 radicals were skipped and why:\n%s", got)
 	}
 }
