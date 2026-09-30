@@ -22,3 +22,10 @@ From the milestone 1 review (deferred minors):
 - [ ] flushPending: on a mid-run 401, drop the entries already sent before returning.
 - [ ] Romaji gaps: shimbun (m before b/p/m), vu, dya/dyu, xtsu, wi.
 - [ ] Spec wording: typo tolerance uses the accepted meaning's length, not the typed answer's.
+
+From the milestone 2 review (deferred minors):
+- [ ] Backend test for the assignment cache version reset (behavior is right via the shared syncResources; the spec asked for its own test).
+- [ ] A submit landing after the next session starts counts toward the new session's summary (cosmetic).
+- [ ] Below about 60 columns the kanji progress line wraps; drop the counts suffix on narrow terminals.
+- [ ] The failed screen says "Could not load reviews" even when the dashboard sync failed; say "Could not sync".
+- [ ] Incremental sync uses the local clock for updated_after (clock skew can skip updates); use the response's data_updated_at.

@@ -49,6 +49,7 @@ type (
 		err error
 	}
 	drawBigMsg   struct{}
+	refreshMsg   struct{ at time.Time } // time to reload the dashboard
 	submittedMsg struct {
 		pending bool
 		err     error
@@ -75,8 +76,13 @@ type Model struct {
 	bigText        bool   // draw characters with kitty's text sizing protocol
 	bigDrawn       string // bigKey of the last big-glyph draw
 	dash           dashboard.Dashboard
-	loadingReviews bool // which load a retry repeats: reviews or the dashboard
+	loadingReviews bool      // which load a retry repeats: reviews or the dashboard
+	refreshAt      time.Time // when the dashboard reloads itself; stale timers are ignored
 }
+
+// refreshSlack is how long after a forecast hour the dashboard reloads,
+// giving WaniKani a moment to make those reviews available.
+const refreshSlack = 5 * time.Second
 
 // New builds the UI. bigText turns on large characters, which only kitty
 // can draw (see bigCharsSeq); other terminals get the normal layout.
@@ -202,7 +208,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dash = msg.d
 		m.screen = home
-		return m, nil
+		if len(msg.d.Forecast) == 0 {
+			return m, nil
+		}
+		// Reload when the next reviews become available, so a dashboard left
+		// open never shows stale counts.
+		at := msg.d.Forecast[0].At.Add(refreshSlack)
+		m.refreshAt = at
+		return m, tea.Tick(time.Until(at), func(time.Time) tea.Msg { return refreshMsg{at} })
+	case refreshMsg:
+		if !msg.at.Equal(m.refreshAt) || m.screen != home || m.quitting {
+			return m, nil // replaced by a newer refresh, or we moved on
+		}
+		return m, m.loadDashboard() // stays on the dashboard while it reloads
 	case submittedMsg:
 		m.inFlight--
 		var apiErr *wanikani.APIError
@@ -221,6 +239,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.screen == home {
+			if m.quitting {
+				return m, nil // waiting for submits; starting a session now could be cut off
+			}
 			switch msg.String() {
 			case "r", "enter":
 				return m.startReviews()
@@ -255,6 +276,7 @@ func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 		return m.loadFailed(msg.err)
 	}
 	m.pending, m.rejected, m.lost, m.lostErr = 0, 0, 0, nil // per-session counts
+	m.bigDrawn = ""                                         // a new session always draws its first item
 	m.skipped = msg.skipped
 	m.session = review.NewSession(msg.items, rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	m.screen = reviewing

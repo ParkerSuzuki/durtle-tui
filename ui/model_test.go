@@ -453,3 +453,49 @@ func TestDashboardFitsWidth(t *testing.T) {
 		}
 	}
 }
+
+// Left open, the dashboard reloads itself when the next forecast hour
+// arrives, without leaving the home screen. Stale timers do nothing.
+func TestDashboardRefreshesAtNextForecastHour(t *testing.T) {
+	next := time.Now().Add(time.Hour).Truncate(time.Hour)
+	fb := &fakeBackend{dash: dashboard.Dashboard{Level: 4}}
+	m, cmd := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{Level: 3,
+		Forecast: []dashboard.Hour{{At: next, Added: 5, Total: 5}}}})
+	if cmd == nil || !m.refreshAt.Equal(next.Add(refreshSlack)) {
+		t.Fatalf("refresh not scheduled: cmd %v, refreshAt %v", cmd, m.refreshAt)
+	}
+	if _, stale := step(t, m, refreshMsg{at: next.Add(-time.Hour)}); stale != nil {
+		t.Error("an outdated refresh timer must not reload")
+	}
+	m, cmd = step(t, m, refreshMsg{at: m.refreshAt})
+	if cmd == nil || m.screen != home {
+		t.Fatalf("refresh: cmd %v, screen %v; want a background reload on the dashboard", cmd, m.screen)
+	}
+	if m, _ = step(t, m, cmd()); m.dash.Level != 4 {
+		t.Errorf("dashboard not reloaded: level %d", m.dash.Level)
+	}
+}
+
+// A new session must redraw the big glyph even when its first item matches
+// the last one drawn in the previous session.
+func TestNewSessionRedrawsBigChars(t *testing.T) {
+	m := bigModel(t, ground)
+	m, _ = typeAndEnter(t, m, "ground") // session over
+	if _, cmd := step(t, m, loadedMsg{items: []review.Item{ground}}); !schedulesBigRedraw(cmd) {
+		t.Error("the next session's first item was not drawn")
+	}
+}
+
+// While waiting to quit, the dashboard ignores keys: starting a session
+// then would let the pending quit cut it off.
+func TestQuittingIgnoresStartReviews(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}, dash: dashboard.Dashboard{Reviews: 1}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = step(t, m, cmd()) // dashboard
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if m, cmd = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil || m.screen != home {
+		t.Errorf("r while quitting: screen %v, cmd %v; want it ignored", m.screen, cmd)
+	}
+}
