@@ -293,3 +293,68 @@ struct; for a fire-and-forget body, a map is fine.
 **Anonymous structs in tests.** `TestSubmitReviewBody` decodes into
 `var body struct{ Review map[string]int ... }`, a type declared inline
 because nothing else needs it.
+
+## 7. Dependencies, files on disk, and concurrency safety
+
+Code: [store/store.go](../store/store.go), [backend.go](../backend.go), [backend_test.go](../backend_test.go)
+
+**Adding a dependency.** `go get github.com/zalando/go-keyring@v0.2.8`
+downloads the module, records it in `go.mod` (what we need) and `go.sum`
+(cryptographic hashes of exactly what was downloaded). `go mod tidy` then
+removes anything unused and adds anything missing. Both files are
+committed: `go.sum` means everyone who builds durtle-tui gets byte-identical
+dependencies, or the build fails. There is no lockfile tool to choose and
+no `node_modules`; downloads live in a shared cache (`go env GOMODCACHE`).
+
+**Cross-platform paths from the standard library.** `os.UserConfigDir()`
+is `~/.config` on Linux, `~/Library/Application Support` on macOS, and
+`%AppData%` on Windows. `os.UserCacheDir()` is the same idea for caches.
+`filepath.Join` uses the right separator for the OS.
+
+**Octal file modes.** `0o600` (owner read/write, nobody else) and `0o700`
+(owner only, for directories). The `0o` prefix is Go's explicit octal
+literal.
+
+**Atomic writes.** `WriteJSON` writes `file.tmp` and then `os.Rename`s it
+over `file`. On the same filesystem, rename is atomic: other readers see
+either the old file or the new one, never half of each, even if the app
+crashes mid-write. Cheap insurance for `pending.json`, which holds answers
+we promised not to lose.
+
+**`errors.Is(err, fs.ErrNotExist)`** is how Go checks "file not found"
+portably. The OS-specific error is wrapped inside; `errors.Is` digs for it.
+
+**`sync.Mutex` and why it is needed here.** Bubble Tea runs every command on
+its own goroutine (lightweight thread). If you answer two items quickly and
+both submits fail, two goroutines would read-modify-write `pending.json` at
+the same time and one answer could be lost. `b.mu.Lock()` makes the second
+wait for the first. `defer b.mu.Unlock()` right after `Lock` is the idiom:
+the unlock can never be forgotten on an early return. The mutex is a field
+used by value inside a struct that is always handled through a pointer
+(`*backend`); copying a struct that contains a mutex is a bug, and `go vet`
+flags it.
+
+**`errors.As(err, &apiErr)`** takes a pointer to a variable of the target
+type (here `**wanikani.APIError`, because the error type is itself a
+pointer). If anything in the error chain matches, it fills the variable and
+returns true. `rejected` uses it to read the status code.
+
+**Named result parameters** in `Submit(...) (pending bool, err error)`
+document what the two return values mean at the signature.
+
+**Maps with int keys in JSON.** `map[int][]string` encodes as a JSON object
+with string keys (`{"440": ["huge"]}`) and decodes back to ints. JSON only
+allows string keys; `encoding/json` converts automatically.
+
+**Prepending to a slice.** `append([]string{m.Meaning}, it.Meanings...)`
+builds a new slice with the primary meaning first. Go has no `unshift`;
+this is the idiom (fine for a handful of elements).
+
+**Test helpers that set up the world.** `t.TempDir()` gives each test a
+fresh directory that is deleted afterwards. `t.Setenv("XDG_CONFIG_HOME",
+...)` redirects `os.UserConfigDir()` for the duration of one test, so the
+token tests never touch your real config. `keyring.MockInit()` swaps the
+real keyring for an in-memory one, a test hook the library provides.
+
+**Package `main` can have tests too.** `backend_test.go` is `package main`
+and tests unexported functions like `buildItems` directly.
