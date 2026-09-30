@@ -5,7 +5,8 @@ or affiliated with WaniKani or Tofugu.
 
 Do your WaniKani reviews from the terminal. Written in Go.
 
-Status: milestone 1 (reviews) is built and being tested against a real account.
+Status: milestone 1 (reviews) works: sync, back-to-back reviews graded like the
+website, submissions that are never lost, big kanji in kitty, and image radicals.
 Lessons, dashboard, and audio come later; see [TODO.md](TODO.md).
 
 ## Install
