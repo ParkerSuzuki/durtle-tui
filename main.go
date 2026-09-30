@@ -24,9 +24,10 @@ func main() {
 	}
 }
 
-// bigTextSupported reports whether the terminal can draw large characters:
-// kitty sets KITTY_WINDOW_ID, but tmux inside kitty cannot pass the
-// sequence through, so it is off there.
+// bigTextSupported reports whether kitty itself is drawing this process, so
+// its text sizing sequence will be honored. kitty sets TERM=xterm-kitty;
+// multiplexers in between (herdr, tmux, zellij) set their own TERM but
+// inherit KITTY_WINDOW_ID from the outer window, so that variable alone lies.
 func bigTextSupported() bool {
-	return os.Getenv("KITTY_WINDOW_ID") != "" && os.Getenv("TMUX") == ""
+	return os.Getenv("TERM") == "xterm-kitty"
 }

@@ -173,7 +173,9 @@ grant, longer).
 ## 19. Big characters in kitty via the text sizing protocol (2026-09-30)
 
 **Context:** The user wanted the kanji themselves bigger, not just the block around them. Terminals draw one font size; kitty 0.40+ can draw text at 2x or 3x with OSC 66.
-**Decision:** In kitty (and not inside tmux), the view leaves the character row empty and a command 40 ms after each update writes the characters at 3x (2x if too wide, normal size if neither fits) straight to the terminal with `tea.Raw`. Other terminals keep the normal layout.
+**Decision:** When kitty itself draws the app (`TERM=xterm-kitty`), the view leaves the character row empty and a command 40 ms after each update writes the characters at 3x (2x if too wide, normal size if neither fits) straight to the terminal with `tea.Raw`. Other terminals keep the normal layout.
 **Why:** A throwaway spike showed Bubble Tea v2's renderer strips OSC 66 from the view, but raw output after the frame works, including across keypresses and resizes. The worst failure is cosmetic: the glyph vanishes until the next message.
 **Known limit:** It is a timing hack, marked with a `ponytail:` comment in `ui/model.go`. A Bubble Tea upgrade that changes when frames are painted could break it; check the review screen after upgrading.
 **Passed on:** A taller block only (decision 18 stays as the fallback); putting OSC 66 in the view (stripped by the renderer).
+
+**Revised 2026-09-30:** Detection first used `KITTY_WINDOW_ID`, which herdr (and tmux) inherit from the outer kitty while dropping OSC 66, leaving an empty block. It now checks `TERM=xterm-kitty`, which any multiplexer in between replaces.
