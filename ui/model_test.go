@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -82,5 +84,14 @@ func TestQuitWaitsForSubmits(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Error("final command should be tea.Quit")
+	}
+}
+
+func TestOnboardingShowsFullPlaceholder(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}), loadedMsg{err: wanikani.ErrUnauthorized})
+	// Strip color codes: the cursor highlight splits "p" from "aste".
+	got := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(m.View().Content, "")
+	if !strings.Contains(got, "paste your API token") {
+		t.Errorf("onboarding view is missing the placeholder:\n%s", got)
 	}
 }

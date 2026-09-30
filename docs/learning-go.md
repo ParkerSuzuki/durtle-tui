@@ -425,3 +425,37 @@ says "missing go.sum entry".
 chains methods that each return a modified copy, so package-level styles
 like `meaningBar` can be shared safely. `style.Render(s)` returns a string
 with ANSI escape codes baked in.
+
+## 9. Wiring it together, and a real bug
+
+Code: [main.go](../main.go)
+
+**`main` stays thin.** It finds the cache directory, builds a `*backend`,
+and hands it to `ui.New`. Every decision lives in a package that can be
+tested; `main` only connects them. The line `ui.New(b)` is where implicit
+interfaces pay off: the compiler checks right there that `*backend` has
+every method `ui.Backend` requires, and would refuse to build if one were
+missing.
+
+**`os.Exit` skips deferred calls.** That is why errors are printed with
+`fmt.Fprintln(os.Stderr, ...)` *before* `os.Exit(1)`, and why nothing
+important is deferred in `main`.
+
+**`go install`** builds the binary into `$(go env GOPATH)/bin` (usually
+`~/go/bin`). `go install github.com/ParkerSuzuki/durtle-tui@latest` does the
+same straight from GitHub, which is the whole install story for Go tools.
+
+**The race detector.** `go test -race ./...` rebuilds everything with
+instrumentation that reports two goroutines touching the same memory
+without synchronization. It found nothing here, which backs up the
+`sync.Mutex` around `pending.json`.
+
+**A bug the unit tests missed.** Running the real binary showed the
+onboarding placeholder as just `p`. Reading the library source
+(`~/go/pkg/mod/charm.land/bubbles/v2@v2.2.1/textinput/textinput.go`,
+`placeholderView`) showed why: it copies the placeholder into a buffer sized
+by the input's width, and the width defaults to 0. The fix is one line,
+`in.SetWidth(inputWidth)`, pinned by `TestOnboardingShowsFullPlaceholder`.
+Two lessons: the module cache holds the exact source of every dependency,
+so reading it is often the fastest way to understand a library; and a
+screen you have never looked at is a screen you have not tested.

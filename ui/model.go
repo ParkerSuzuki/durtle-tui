@@ -21,6 +21,9 @@ type Backend interface {
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 }
 
+// inputWidth fits a WaniKani token (36 characters) with room to spare.
+const inputWidth = 48
+
 type screen int
 
 const (
@@ -61,6 +64,7 @@ type Model struct {
 
 func New(b Backend) Model {
 	in := textinput.New()
+	in.SetWidth(inputWidth) // without a width, the placeholder is cut to one character
 	in.Focus()
 	return Model{backend: b, screen: loading, input: in}
 }
