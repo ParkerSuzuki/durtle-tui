@@ -162,3 +162,10 @@ grant, longer).
 **Decision:** The character block, prompt bar, and input stretch to the terminal width minus a 2-column margin, recomputed on every `tea.WindowSizeMsg`. Characters and the prompt label are centered; typed answers stay left-aligned.
 **Why:** Matches how the review page uses the whole screen. Bubble Tea already sends a message on every resize, so it costs one width field and a few style calls.
 **Passed on:** A max width with centered layout (reads better on very wide terminals; revisit if it looks stretched).
+
+## 18. Taller character block, centered answer (2026-09-30)
+
+**Context:** The user wanted bigger kanji and the typed answer centered.
+**Decision:** The character block gets 3 blank rows above and below (7 rows total). The answer input drops its `> ` prompt, is sized to its text, and is centered, so it grows from the middle as you type.
+**Why:** Terminals draw every character at one font size, so "bigger" in plain terminal cells means more colored space. Sizing the input to its text is the simplest way to center text inside a Bubbles textinput, which only aligns left.
+**Passed on:** Real 2x/3x glyphs via kitty's text sizing protocol for now; a throwaway spike is checking whether Bubble Tea's renderer tolerates it.

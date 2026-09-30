@@ -70,7 +70,7 @@ func (m Model) onboardingView() string {
 func (m Model) reviewView() string {
 	item, part, _ := m.session.Current()
 	done := len(m.session.Results())
-	charStyle := lipgloss.NewStyle().Bold(true).Padding(1, 4).
+	charStyle := lipgloss.NewStyle().Bold(true).Padding(3, 4).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Background(lipgloss.Color(typeColors[item.Type]))
 	chars := charStyle.Render(item.Characters)
@@ -91,10 +91,24 @@ func (m Model) reviewView() string {
 		chars,
 		"",
 		prompt,
-		m.input.View(),
+		m.answerView(),
 		"",
 		m.feedback,
 	}, "\n")
+}
+
+// answerView centers the typed answer under the prompt bar. The input is
+// sized to its text (plus one cell for the cursor) so centering the field
+// centers the text, and it grows from the middle as you type.
+func (m Model) answerView() string {
+	in := m.input // a copy: View must not change the model
+	in.Prompt = ""
+	in.SetWidth(lipgloss.Width(in.Value()) + 1)
+	w := m.innerWidth()
+	if w == 0 {
+		return in.View()
+	}
+	return lipgloss.PlaceHorizontal(w, lipgloss.Center, in.View())
 }
 
 func (m Model) summaryView() string {

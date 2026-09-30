@@ -158,3 +158,40 @@ func TestReviewFillsTerminalWidth(t *testing.T) {
 		}
 	}
 }
+
+func stripANSI(s string) string {
+	return regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]").ReplaceAllString(s, "")
+}
+
+// lineIndex returns the index of the first line containing sub, or -1.
+func lineIndex(lines []string, sub string) int {
+	for i, l := range lines {
+		if strings.Contains(l, sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestCharacterBlockIsTall(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	lines := strings.Split(m.View().Content, "\n")
+	top, bar := lineIndex(lines, "done"), lineIndex(lines, "Radical meaning")
+	if gap := bar - top - 1; gap < 9 {
+		t.Errorf("only %d lines between progress and prompt; want a block at least 7 rows tall plus spacing", gap)
+	}
+}
+
+func TestAnswerInputIsCentered(t *testing.T) {
+	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	m.input.SetValue("ground")
+	lines := strings.Split(stripANSI(m.View().Content), "\n")
+	line := lines[lineIndex(lines, "ground")]
+	left := len(line) - len(strings.TrimLeft(line, " "))
+	right := 80 - left - lipgloss.Width("ground")
+	if d := left - right; d < -3 || d > 3 {
+		t.Errorf("answer not centered: %d cells left, %d right\n%q", left, right, line)
+	}
+}
