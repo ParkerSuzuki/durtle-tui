@@ -25,17 +25,21 @@ visual similarity to the WaniKani website (forbidden by the API terms anyway).
 ```
 ~/WaniKani/
   go.mod               module github.com/ParkerSuzuki/durtle-tui
-  main.go              wiring: token, client, cache, start the UI
+  main.go              wiring: build the backend, start the UI
+  backend.go           implements ui.Backend: sync, cache, pending queue
   wanikani/            API client: types, requests, paging, rate limits
   review/              pure logic: grading, typo tolerance, kana, session queue
-  ui/                  Bubble Tea models: loading, review, summary screens
+  store/               token (keyring or file) and JSON files on disk
+  ui/                  Bubble Tea models: onboarding, loading, review, summary
   docs/decisions.md    decision log
+  docs/learning-go.md  Go concepts, explained task by task
   TODO.md              deferred work
 ```
 
-Dependency direction: `main` -> `ui` -> `review`, and `main` -> `wanikani`.
-`review` imports nothing outside the standard library and never touches the
-network or the screen, so it is fully unit testable.
+Dependency direction: `main` -> `ui`, `wanikani`, `store`; `ui` -> `review`
+(and `wanikani` only for `ErrUnauthorized`). `review` imports nothing outside
+the standard library and never touches the network or the screen, so it is
+fully unit testable.
 
 External dependencies: Bubble Tea, Bubbles (text input), Lip Gloss (styling),
 go-keyring (token storage).

@@ -67,6 +67,7 @@ website. Tracked in TODO.md.
 **Why:** Rendering them needs SVG rasterizing plus the kitty graphics protocol,
 which is a milestone of its own.
 **Passed on:** Opening the SVG in a browser (clunky); pulling images into milestone 1.
+**Superseded 2026-09-30 by decision 20:** image-only radicals are now drawn.
 
 ## 7. Own romaji to kana converter (2026-09-29)
 
@@ -127,3 +128,62 @@ The README opens by stating it is an unofficial third-party app.
 reference. The API terms require the unofficial label up front.
 **Passed on:** GPL-3.0 (forces forks to stay open); Apache-2.0 (adds a patent
 grant, longer).
+
+## 13. Charm v2 libraries (2026-09-29)
+
+**Context:** Bubble Tea, Bubbles and Lip Gloss each have a v1 and a v2 line.
+**Decision:** Use v2, imported from `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`, `charm.land/lipgloss/v2`.
+**Why:** v2 is where maintenance happens (v2.0.10 shipped 2026-09-24); v1 has had no release since 2025.
+**Passed on:** v1 (more tutorials online, but frozen).
+
+## 14. store package and a Backend interface (2026-09-29)
+
+**Context:** The UI must log in, sync, and submit, but should be testable without a network or a keyring.
+**Decision:** Add package `store` (token plus JSON files). `ui` declares a three-method `Backend` interface; `package main` implements it by combining `wanikani` and `store`. Tests pass a fake.
+**Why:** "Accept interfaces, return structs": the consumer defines the small interface it needs. Keeps `ui` free of HTTP and disk code.
+**Passed on:** `ui` importing `wanikani` and `store` directly (untestable without a server); a struct of function fields (works, less idiomatic).
+
+## 15. Answer flow (2026-09-29)
+
+**Context:** What happens on screen after each answer?
+**Decision:** Correct answers advance immediately with a short confirmation line. Wrong answers show the accepted answers and wait for Enter. Warnings (kana in a meaning, wrong reading type) keep the input so you can fix it.
+**Why:** Matches the website's rhythm and gives time to read the correction.
+**Passed on:** Waiting for Enter after every answer (slower); auto-advancing after wrong answers (no time to read).
+
+## 16. Color palette (2026-09-29)
+
+**Context:** The API terms forbid copying WaniKani's visual design, including its pink/blue/purple.
+**Decision:** Radical teal `#2A9D8F`, kanji amber `#E9A23B`, vocabulary green `#6A994E`. Meaning prompt: light bar `#F4F1DE` with `#1D1D1D` text. Reading prompt: dark bar `#3D405B` with `#F4F1DE` text.
+**Why:** Distinct from WaniKani, readable on dark and light terminals, meaning vs reading is obvious at a glance.
+**Passed on:** Nothing formal; the user accepted it "for now", so revisit once it is on screen.
+
+## 17. Review screen spans the terminal (2026-09-30)
+
+**Context:** The review screen was a fixed 55 cells wide; the user wanted it to fill the terminal and follow resizes.
+**Decision:** The character block, prompt bar, and input stretch to the terminal width minus a 2-column margin, recomputed on every `tea.WindowSizeMsg`. Characters and the prompt label are centered; typed answers stay left-aligned.
+**Why:** Matches how the review page uses the whole screen. Bubble Tea already sends a message on every resize, so it costs one width field and a few style calls.
+**Passed on:** A max width with centered layout (reads better on very wide terminals; revisit if it looks stretched).
+
+## 18. Taller character block, centered answer (2026-09-30)
+
+**Context:** The user wanted bigger kanji and the typed answer centered.
+**Decision:** The character block gets 3 blank rows above and below (7 rows total). The answer input drops its `> ` prompt, is sized to its text, and is centered, so it grows from the middle as you type.
+**Why:** Terminals draw every character at one font size, so "bigger" in plain terminal cells means more colored space. Sizing the input to its text is the simplest way to center text inside a Bubbles textinput, which only aligns left.
+**Passed on:** Real 2x/3x glyphs via kitty's text sizing protocol for now; a throwaway spike is checking whether Bubble Tea's renderer tolerates it.
+
+## 19. Big characters in kitty via the text sizing protocol (2026-09-30)
+
+**Context:** The user wanted the kanji themselves bigger, not just the block around them. Terminals draw one font size; kitty 0.40+ can draw text at 2x or 3x with OSC 66.
+**Decision:** When kitty itself draws the app (`TERM=xterm-kitty`), the view leaves the character row empty and a command 40 ms after each update writes the characters at 3x (2x if too wide, normal size if neither fits) straight to the terminal with `tea.Raw`. Other terminals keep the normal layout.
+**Why:** A throwaway spike showed Bubble Tea v2's renderer strips OSC 66 from the view, but raw output after the frame works, including across keypresses and resizes. The worst failure is cosmetic: the glyph vanishes until the next message.
+**Known limit:** It is a timing hack, marked with a `ponytail:` comment in `ui/model.go`. A Bubble Tea upgrade that changes when frames are painted could break it; check the review screen after upgrading.
+**Passed on:** A taller block only (decision 18 stays as the fallback); putting OSC 66 in the view (stripped by the renderer).
+
+**Revised 2026-09-30:** Detection first used `KITTY_WINDOW_ID`, which herdr (and tmux) inherit from the outer kitty while dropping OSC 66, leaving an empty block. It now checks `TERM=xterm-kitty`, which any multiplexer in between replaces.
+
+## 20. Image-only radicals drawn as half-block art via rsvg-convert (2026-09-30)
+
+**Context:** 19 of 504 radicals have no Unicode character. The API lists PNG and SVG images, but the PNG links now return 403; only SVG downloads.
+**Decision:** The backend downloads a due radical's SVG once into `~/.cache/durtle-tui/radicals/`, with no API token (it is a public file host). The `rsvg-convert` command rasterizes it to a 20x20 PNG, Go's `image/png` decodes it, and the UI draws it as 10 rows of half-block characters (▀ ▄ █) in a block that grows from 7 to 10 rows for these items. Without `rsvg-convert` (or on a failed download) the radical is skipped and the summary says so. The subject cache gained a version number so the new image field forces one full resync.
+**Why:** Half-blocks work in every terminal, including herdr. `rsvg-convert` is already installed on this machine and needs no new Go dependencies. The 10-row size was chosen from rendered previews; 7 rows was recognizable but rough.
+**Passed on:** A pure-Go SVG library (two new modules, and likely unable to read WaniKani's CSS-styled SVGs without rewriting them); a kitty graphics image (sharpest, but kitty only and not in herdr; could be layered on later); shipping pre-rendered images in the repo (redistributes WaniKani artwork, which the API terms forbid).
