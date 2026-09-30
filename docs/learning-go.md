@@ -594,3 +594,27 @@ it printed.
 running off a 100-column screen, which the content test could not see.
 `TestDashboardFitsWidth` now checks `lipgloss.Width` of every line, so a
 layout change that overflows fails in CI instead of on your screen.
+
+## 13. Turning special cases into data
+
+Code: [ui/view.go](../ui/view.go) (`bigGlyph`, `bigGlyphs`, `bigCharsSeq`)
+
+The big-text code started with one hard-coded case: the review kanji. Adding
+the dashboard counts could have meant a second copy with different rows and
+colors. Instead, each screen now *describes* what it wants drawn large as
+a `[]bigGlyph` (row, column, width, scale, text, color), and one function
+draws any list. Adding a third big thing later is one more entry, not one
+more function.
+
+**Describe, then act.** `bigGlyphs()` only computes positions (pure, easy
+to test); `bigCharsSeq()` only turns them into escape codes. Tests check
+the description and the sequence separately.
+
+**`fmt.Sprintf("%v", glyphs)` as a change detector.** `%v` prints every
+field of every struct in the slice, so the string changes exactly when
+anything worth redrawing changes. It replaced a hand-built key that had to
+list the fields that mattered, and could drift out of date.
+
+**`lipgloss.JoinHorizontal`** places multi-line blocks side by side and pads
+shorter ones to the same height, which is how the two tiles and the
+two-space gap between them line up.

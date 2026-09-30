@@ -383,7 +383,7 @@ func TestDashboardShowsPanels(t *testing.T) {
 		m, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: width, Height: 40})
 		m, _ = step(t, m, dashboardMsg{d: sampleDash})
 		got := stripANSI(m.View().Content)
-		for _, want := range []string{"Level 12", "Reviews 67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
+		for _, want := range []string{"Level 12", "Lessons", "Reviews", "67", "21 / 33", "30 needed", "15:00", "+12", "79", "Apprentice", "143", "Burned"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("width %d: dashboard missing %q", width, want)
 			}
@@ -497,5 +497,37 @@ func TestQuittingIgnoresStartReviews(t *testing.T) {
 	m, _ = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if m, cmd = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil || m.screen != home {
 		t.Errorf("r while quitting: screen %v, cmd %v; want it ignored", m.screen, cmd)
+	}
+}
+
+// The counts sit in colored tiles. Without kitty they are in the view on
+// tileNumberRow; with kitty the view leaves them out and they are drawn at 3x.
+func TestCountTiles(t *testing.T) {
+	plain, _ := step(t, New(&fakeBackend{}, false), tea.WindowSizeMsg{Width: 100, Height: 40})
+	plain, _ = step(t, plain, dashboardMsg{d: sampleDash})
+	lines := strings.Split(stripANSI(plain.View().Content), "\n")
+	if got := lineIndex(lines, "67") + 1; got != tileNumberRow {
+		t.Errorf("review count on row %d, want tileNumberRow %d", got, tileNumberRow)
+	}
+	if lineIndex(lines, "Lessons") < 0 || lineIndex(lines, "Reviews") < 0 {
+		t.Error("tile labels missing")
+	}
+
+	big, _ := step(t, New(&fakeBackend{}, true), tea.WindowSizeMsg{Width: 100, Height: 40})
+	big, cmd := step(t, big, dashboardMsg{d: sampleDash})
+	if !schedulesBigRedraw(cmd) {
+		t.Error("the dashboard must draw its big counts")
+	}
+	if strings.Contains(stripANSI(big.View().Content), "67") {
+		t.Error("with big text on, the view must leave the count row empty")
+	}
+	seq := big.bigCharsSeq()
+	for _, want := range []string{"\x1b]66;s=3;5\x07", "\x1b]66;s=3;67\x07"} {
+		if !strings.Contains(seq, want) {
+			t.Errorf("missing %q in %q", want, seq)
+		}
+	}
+	if want := fmt.Sprintf("\x1b[%d;", tileNumberRow-1); !strings.Contains(seq, want) {
+		t.Errorf("big counts not placed at row %d: %q", tileNumberRow-1, seq)
 	}
 }
