@@ -251,3 +251,45 @@ server with a handler function, and the client is pointed at it through
 what makes this possible: no mocking library, no global variables.
 `t.Helper()` makes failures report the caller's line, and `t.Cleanup` shuts
 the server down when the test ends.
+
+## 6. Generic functions and paging
+
+Code: [wanikani/endpoints.go](../wanikani/endpoints.go), [wanikani/endpoints_test.go](../wanikani/endpoints_test.go)
+
+**Why `getAll` is a function, not a method.** Go methods cannot declare
+their own type parameters: `func (c *Client) getAll[T any](...)` does not
+compile. Only the *type* can be generic (`Resource[T]`), and its methods
+share that `T`. So the generic helper is a plain function that takes the
+client as an argument: `getAll[Subject](ctx, c, "subjects")`. The public
+methods (`Subjects`, `StudyMaterials`, ...) are one-line wrappers that pick
+the type, so callers never see the generics.
+
+**Explicit type arguments.** `getAll[Subject](...)` names `T` because the
+compiler cannot infer it from the arguments (none of them mention `T`).
+When an argument does carry the type, Go infers it and you can leave the
+brackets off.
+
+**A `for` loop with an empty post statement.**
+`for next := c.base + path; next != ""; { ... }` declares `next`, loops
+while it is non-empty, and updates it inside the body. Go has only one loop
+keyword, `for`, which covers while-loops, infinite loops, and ranges too.
+
+**`append(all, p.Data...)`** appends every element of one slice to another;
+the `...` spreads the slice into individual arguments.
+
+**`time.Time` zero value as "not set".** `Subjects(ctx, time.Time{})` asks
+for everything, because `t.IsZero()` is true for a `time.Time` nobody
+filled in. No pointer or sentinel needed.
+
+**`url.QueryEscape`** makes the timestamp safe in a query string (a `+` in a
+timezone offset would otherwise read as a space). Times are formatted as
+RFC 3339 in UTC, which is what the API expects.
+
+**Nested map literals for one-off JSON.** `SubmitReview` builds
+`map[string]any{"review": map[string]int{...}}` instead of declaring two
+structs for a body used once. For shapes that are reused or decoded, use a
+struct; for a fire-and-forget body, a map is fine.
+
+**Anonymous structs in tests.** `TestSubmitReviewBody` decodes into
+`var body struct{ Review map[string]int ... }`, a type declared inline
+because nothing else needs it.
