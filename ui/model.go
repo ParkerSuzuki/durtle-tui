@@ -408,8 +408,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.screen == home {
-			if m.quitting {
-				return m, nil // waiting for submits; starting a session now could be cut off
+			if m.quitting { // waiting for submits; starting a session now could be cut off
+				switch msg.String() {
+				case "q", "esc", "ctrl+c":
+					return m.quit()
+				}
+				return m, nil
 			}
 			switch msg.String() {
 			case "r", "enter":
@@ -594,7 +598,9 @@ func accepted(it review.Item, p review.Part) []string {
 func (m Model) innerWidth() int { return max(m.width-2*pagePadding, 0) }
 
 func (m Model) quit() (tea.Model, tea.Cmd) {
-	if m.inFlight == 0 {
+	// A second quit stops waiting: answers still sending are already saved in
+	// pending.json (write-ahead) and go out on the next launch.
+	if m.inFlight == 0 || m.quitting {
 		return m, tea.Quit
 	}
 	m.quitting = true

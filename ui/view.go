@@ -69,7 +69,7 @@ func (m Model) View() tea.View {
 		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
 	if m.quitting {
-		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting...", m.inFlight))
+		body += "\n\n" + dim.Render(fmt.Sprintf("Finishing %d submission(s) before quitting... (again to quit now; they are saved)", m.inFlight))
 	}
 	v := tea.NewView(page.Render(body))
 	v.AltScreen = true

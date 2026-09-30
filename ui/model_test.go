@@ -871,3 +871,30 @@ func TestAccuracyPanel(t *testing.T) {
 		t.Errorf("empty accuracy not explained:\n%s", got)
 	}
 }
+
+// A second quit key stops waiting: answers still sending are already saved
+// in pending.json and go out on the next launch.
+func TestSecondQuitStopsWaiting(t *testing.T) {
+	fb := &fakeBackend{items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground") // one submit in flight
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil || !m.quitting {
+		t.Fatal("first esc should wait")
+	}
+	if _, cmd = step(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil {
+		t.Fatal("second quit key should quit now")
+	} else if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("want tea.Quit")
+	}
+	// Same from the dashboard, where keys are otherwise ignored while quitting.
+	fb.dash = dashboard.Dashboard{}
+	m, _ = step(t, New(fb, false), loadedMsg{items: fb.items})
+	m, _ = typeAndEnter(t, m, "ground")
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = step(t, m, cmd())
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if _, cmd = step(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"}); cmd == nil {
+		t.Error("second q on the dashboard should quit now")
+	}
+}

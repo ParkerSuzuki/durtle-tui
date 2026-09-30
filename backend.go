@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -255,27 +256,39 @@ func (b *backend) syncSynonyms(ctx context.Context) (map[int][]string, error) {
 	return cache.Synonyms, store.WriteJSON(path, cache)
 }
 
-// Submit sends one finished review. If it cannot be sent right now, it is
-// saved to pending.json and pending is true. err is non-nil only when
-// WaniKani refused the review or it could not be saved.
+// Submit sends one finished review. The answer is written to pending.json
+// first and removed once WaniKani has it (or refused it for good), so killing
+// the app mid-send loses nothing: it goes out on the next launch. pending is
+// true when it could not be sent now. err is non-nil when WaniKani refused
+// the review or the pending file could not be written.
 func (b *backend) Submit(ctx context.Context, s review.Submission) (pending bool, err error) {
-	err = b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
-	if err == nil {
-		return false, nil
-	}
-	if rejected(err) {
+	if err := b.editPending(func(list []review.Submission) []review.Submission { return append(list, s) }); err != nil {
 		return false, err
 	}
+	err = b.client.SubmitReview(ctx, s.AssignmentID, s.IncorrectMeaning, s.IncorrectReading)
+	if err != nil && !rejected(err) {
+		return true, nil // stays in pending.json
+	}
+	if rerr := b.editPending(func(list []review.Submission) []review.Submission {
+		if i := slices.Index(list, s); i >= 0 {
+			return slices.Delete(list, i, i+1)
+		}
+		return list
+	}); rerr != nil {
+		return false, rerr
+	}
+	return false, err
+}
+
+// editPending rewrites pending.json under the lock; submits run concurrently.
+func (b *backend) editPending(change func([]review.Submission) []review.Submission) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var list []review.Submission
 	if err := store.ReadJSON(b.pendingPath(), &list); err != nil {
-		return false, err
+		return err
 	}
-	if err := store.WriteJSON(b.pendingPath(), append(list, s)); err != nil {
-		return false, err
-	}
-	return true, nil
+	return store.WriteJSON(b.pendingPath(), change(list))
 }
 
 // flushPending retries saved answers, keeping only those that still fail

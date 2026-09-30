@@ -465,3 +465,27 @@ func TestFlushPendingStopsOn401WithoutResending(t *testing.T) {
 		t.Errorf("kept %v, want 2 and 3 (1 was already accepted)", got)
 	}
 }
+
+// An answer is on disk before it is sent (so killing the app mid-send loses
+// nothing) and gone from disk once WaniKani has it.
+func TestSubmitWritesAhead(t *testing.T) {
+	var onDisk []review.Submission
+	var b *backend
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		onDisk = readPending(t, b)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+	b = &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	sub := review.Submission{AssignmentID: 9, IncorrectMeaning: 1}
+	if pending, err := b.Submit(context.Background(), sub); pending || err != nil {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+	if len(onDisk) != 1 || onDisk[0] != sub {
+		t.Errorf("while sending, pending.json = %v; want the answer saved first", onDisk)
+	}
+	if got := readPending(t, b); len(got) != 0 {
+		t.Errorf("after success, pending.json = %v; want empty", got)
+	}
+}
