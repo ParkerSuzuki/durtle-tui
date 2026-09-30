@@ -103,7 +103,7 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	}
 	now := time.Now()
 	d := dashboard.Build(now, user.Level, sum, assignments, subjects)
-	d.LessonsToday = len(lessons.Pick(lessonCandidates(now, sum, assignments, subjects),
+	d.LessonsToday = len(lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)),
 		lessons.StartedToday(now, startTimes(assignments)), settings))
 	return d, nil
 }
@@ -421,7 +421,8 @@ func (b *backend) SaveSettings(s lessons.Settings) error {
 // subject IDs joined with their assignments and subjects, minus hidden ones.
 func lessonCandidates(now time.Time, sum wanikani.Summary,
 	assignments map[int]wanikani.Resource[wanikani.Assignment],
-	subjects map[int]wanikani.Resource[wanikani.Subject]) []lessons.Candidate {
+	subjects map[int]wanikani.Resource[wanikani.Subject],
+	keep func(wanikani.Resource[wanikani.Subject]) bool) []lessons.Candidate {
 	bySubject := map[int]int{} // subject ID -> assignment ID
 	for _, a := range assignments {
 		bySubject[a.Data.SubjectID] = a.ID
@@ -434,13 +435,22 @@ func lessonCandidates(now time.Time, sum wanikani.Summary,
 		for _, id := range e.SubjectIDs {
 			s, ok := subjects[id]
 			aid, has := bySubject[id]
-			if !ok || !has || s.Data.HiddenAt != nil {
+			if !ok || !has || s.Data.HiddenAt != nil || !keep(s) {
 				continue
 			}
 			out = append(out, lessons.Candidate{AssignmentID: aid, SubjectID: id, Level: s.Data.Level, Type: s.Object})
 		}
 	}
 	return out
+}
+
+// drawable reports whether a subject can be shown: it has characters, or it
+// is an image-only radical whose picture can be rasterized. Undrawable ones
+// must not take daily-cap slots they can never use.
+func (b *backend) drawable(ctx context.Context) func(wanikani.Resource[wanikani.Subject]) bool {
+	return func(s wanikani.Resource[wanikani.Subject]) bool {
+		return s.Data.Characters != nil || b.radicalImage(ctx, s) != nil
+	}
 }
 
 // startTimes lists when every started assignment was started.
@@ -486,7 +496,7 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 		return none, err
 	}
 	now := time.Now()
-	picked := lessons.Pick(lessonCandidates(now, sum, assignments, subjects), lessons.StartedToday(now, startTimes(assignments)), settings)
+	picked := lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)), lessons.StartedToday(now, startTimes(assignments)), settings)
 	due := make([]wanikani.Resource[wanikani.Assignment], 0, len(picked))
 	for _, c := range picked {
 		due = append(due, assignments[c.AssignmentID])

@@ -25,3 +25,12 @@ From the milestone 2 review (deferred minors):
 - [ ] A submit landing after the next session starts counts toward the new session's summary (cosmetic).
 - [ ] Below about 60 columns the kanji progress line wraps; drop the counts suffix on narrow terminals.
 - [ ] Incremental sync uses the local clock for updated_after (clock skew can skip updates); use the response's data_updated_at.
+
+From the milestone 3 review (deferred minors):
+- [ ] Settings with some fields hand-edited (e.g. only daily_cap) clamp batch size to 3 instead of seeding it from WaniKani; a corrupt settings.json is overwritten with defaults.
+- [ ] Settings opened before the first dashboard load seed batch size 5, not the WaniKani value.
+- [ ] If settings.json cannot be written, the whole dashboard fails to load.
+- [ ] Enter on the lesson summary while starts are still in flight reloads the dashboard too early (stale count; `l` may re-teach the same items).
+- [ ] A 401 on a lesson start counts as a failure instead of going to token entry.
+- [ ] → on the last teaching page starts the quiz (only Enter should); space adds 1 on numeric settings rows; refusing to turn off the last type is silent.
+- [ ] Measure subjects.json after the version-4 resync (mnemonics and sentences make it bigger; it is decoded on every dashboard load).

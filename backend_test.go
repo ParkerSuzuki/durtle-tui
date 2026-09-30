@@ -349,6 +349,9 @@ func TestLessons(t *testing.T) {
 	if len(vocab.Sentences) != 3 || vocab.PartsOfSpeech[0] != "numeral" || plan.Lessons[0].MeaningMnemonic == "" {
 		t.Errorf("vocab lesson = %+v", vocab)
 	}
+	if d, err := b.Dashboard(context.Background()); err != nil || d.LessonsToday != 3 {
+		t.Errorf("dashboard promises %d lessons (%v); want 3: the undrawable radical must not count", d.LessonsToday, err)
+	}
 	if s, err := b.Settings(); err != nil || s.BatchSize != 4 || s.DailyCap != 10 {
 		t.Errorf("settings.json not written with defaults: %+v, %v", s, err)
 	}

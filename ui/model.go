@@ -107,6 +107,8 @@ type Model struct {
 	startErr       error
 	settings       lessons.Settings // being edited on the settings screen
 	settingRow     int
+	height         int // terminal rows, 0 before the first resize
+	scroll         int // first visible text line on a teaching page
 }
 
 // refreshSlack is how long after a forecast hour the dashboard reloads,
@@ -161,7 +163,7 @@ func (m Model) startReviews() (tea.Model, tea.Cmd) {
 	if m.dash.Reviews == 0 {
 		return m, nil
 	}
-	m.screen, m.loadingReviews = loading, true
+	m.screen, m.loadingReviews, m.loadingLessons = loading, true, false
 	return m, m.load()
 }
 
@@ -312,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 		// The text area is the inner width minus the "> " prompt and the cursor.
 		m.input.SetWidth(max(m.innerWidth()-3, 10))
 		return m, nil
@@ -328,7 +330,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.EchoMode = textinput.EchoNormal
 		m.input.Placeholder = ""
 		m.input.Reset()
-		m.loadingReviews = false
+		m.loadingReviews, m.loadingLessons = false, false
 		return m, m.loadDashboard()
 	case dashboardMsg:
 		if msg.err != nil {
@@ -353,7 +355,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m.loadFailed(msg.err)
 		}
-		m.plan, m.batchStart, m.page, m.bigDrawn = msg.plan, 0, 0, ""
+		m.plan, m.batchStart, m.page, m.scroll, m.bigDrawn = msg.plan, 0, 0, 0, ""
 		m.started, m.startFailed, m.startErr = 0, 0, nil
 		m.screen = teaching
 		if len(m.plan.Lessons) == 0 {
@@ -365,6 +367,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.startFailed++
 			m.startErr = msg.err
+			if m.startForbidden() && (m.lessonMode || m.screen == teaching) {
+				// Nothing can be started with this token: stop now and explain,
+				// rather than after every remaining batch.
+				m.screen, m.lessonMode = lessonSummary, false
+			}
 		} else {
 			m.started++
 		}
@@ -423,13 +430,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			last := len(m.pages()) - 1
 			switch msg.String() {
 			case "right", "enter":
+				m.scroll = 0
 				if m.page < last {
 					m.page++
 					return m, nil
 				}
 				return m.quiz()
 			case "left":
-				m.page = max(m.page-1, 0)
+				m.page, m.scroll = max(m.page-1, 0), 0
+				return m, nil
+			case "down":
+				lines, avail := m.teachBody()
+				m.scroll = min(m.scroll+1, max(len(lines)-avail, 0))
+				return m, nil
+			case "up":
+				m.scroll = max(m.scroll-1, 0)
 				return m, nil
 			case "q":
 				return m.toDashboard()

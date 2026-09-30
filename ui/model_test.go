@@ -782,3 +782,76 @@ func TestSettingsScreen(t *testing.T) {
 		t.Errorf("after saving: screen %v, want the dashboard reloading", m.screen)
 	}
 }
+
+// A long lesson must fit the screen (Bubble Tea drops the top lines of an
+// oversized frame, which moves the block under the big glyph) and scroll.
+func TestTeachingFitsScreenAndScrolls(t *testing.T) {
+	long := lessonKanji
+	long.MeaningMnemonic = strings.Repeat("A very long mnemonic sentence. ", 80) + "THE END"
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{long}, BatchSize: 3}}
+	m := lessonModel(t, fb)
+	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	lines := strings.Split(stripANSI(m.View().Content), "\n")
+	if len(lines) > 30 {
+		t.Errorf("teaching view is %d lines on a 30-line screen", len(lines))
+	}
+	if got := lineIndex(lines, "Lesson 1 of 1"); got != 1 {
+		t.Errorf("header on line %d, want 1 (the top must not scroll away)", got)
+	}
+	if strings.Contains(stripANSI(m.View().Content), "THE END") {
+		t.Fatal("the end of a long mnemonic should start out of view")
+	}
+	for range 40 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "THE END") {
+		t.Error("scrolling down should reach the end of the mnemonic")
+	}
+}
+
+// Leaving lessons through token entry must not make a later review load
+// failure look like a lesson failure.
+func TestLessonLoadFlagDoesNotLeak(t *testing.T) {
+	fb := &fakeBackend{planErr: wanikani.ErrUnauthorized, items: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{LessonsToday: 1, Reviews: 1}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if m, _ = step(t, m, cmd()); m.screen != onboarding {
+		t.Fatalf("screen %v, want onboarding after a 401", m.screen)
+	}
+	m, _ = step(t, m, loginMsg{})
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Reviews: 1}})
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m, _ = step(t, m, loadedMsg{err: errors.New("boom")})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "load reviews") {
+		t.Errorf("failure text:\n%s", got)
+	}
+	if _, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
+		t.Fatal("no retry")
+	} else if _, ok := cmd().(loadedMsg); !ok {
+		t.Error("retry must reload reviews, not lessons")
+	}
+}
+
+// Without assignments:start, the first refused start ends the lesson
+// session right away instead of after every batch.
+func TestStart403StopsLessonsEarly(t *testing.T) {
+	fb := &fakeBackend{plan: lessons.Plan{Lessons: []lessons.Lesson{lessonRadical, lessonKanji, lessonRadical, lessonKanji}, BatchSize: 3},
+		startErr: &wanikani.APIError{Status: 403}}
+	fb.plan.Lessons[2].AssignmentID, fb.plan.Lessons[3].AssignmentID = 12, 22
+	m := lessonModel(t, fb)
+	for range m.pages() {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+	var start tea.Cmd
+	for start == nil && m.screen == reviewing {
+		it, part, _ := m.session.Current()
+		ans := it.Meanings[0]
+		if part == review.Reading {
+			ans = it.Readings[0]
+		}
+		m, start = typeAndEnter(t, m, ans)
+	}
+	if m, _ = step(t, m, start()); m.screen != lessonSummary || m.lessonMode {
+		t.Errorf("after a 403: screen %v, lessonMode %v; want the lesson summary now", m.screen, m.lessonMode)
+	}
+}

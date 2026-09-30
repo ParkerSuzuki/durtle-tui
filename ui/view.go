@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -501,25 +502,60 @@ func markup(s string) string {
 
 var readingLabels = map[string]string{"onyomi": "On'yomi", "kunyomi": "Kun'yomi", "nanori": "Nanori"}
 
+// teachBody is the current teaching page's text, wrapped to the screen, and
+// how many of its lines fit under the fixed parts of the page. With an
+// unknown height (before the first resize) everything fits.
+func (m Model) teachBody() (lines []string, avail int) {
+	p := m.pages()[m.page]
+	l := m.batch()[p.lesson]
+	var body []string
+	switch p.kind {
+	case meaningPage:
+		body = meaningLines(l)
+	case readingPage:
+		body = readingLines(l)
+	case contextPage:
+		body = contextLines(l)
+	}
+	text := strings.Join(body, "\n")
+	if w := m.innerWidth(); w > 0 {
+		text = lipgloss.NewStyle().Width(w).Render(text)
+	}
+	lines = strings.Split(text, "\n")
+	if m.height == 0 {
+		return lines, len(lines)
+	}
+	// page padding (2), header, blank, block, blank, bar, blank, then after
+	// the text: blank, hint.
+	fixed := 2 + 1 + 1 + lipgloss.Height(m.itemBlock(l.Item)) + 1 + 1 + 1 + 1 + 1
+	return lines, max(m.height-fixed, 2)
+}
+
 func (m Model) teachingView() string {
 	ps := m.pages()
 	p := ps[m.page]
 	l := m.batch()[p.lesson]
-	var name string
-	var body []string
-	bar := meaningBar
+	name, bar := "meaning", meaningBar
 	switch p.kind {
-	case meaningPage:
-		name, body = "meaning", meaningLines(l)
 	case readingPage:
-		name, body, bar = "reading", readingLines(l), readingBar
+		name, bar = "reading", readingBar
 	case contextPage:
-		name, body = "context", contextLines(l)
+		name = "context"
 	}
-	text := strings.Join(body, "\n")
 	if w := m.innerWidth(); w > 0 {
 		bar = bar.Width(w).Align(lipgloss.Center)
-		text = lipgloss.NewStyle().Width(w).Render(text)
+	}
+	// Bubble Tea drops the top of a frame taller than the screen, which would
+	// push the block out from under the big glyph, so long text scrolls.
+	lines, avail := m.teachBody()
+	shown := lines
+	if len(lines) > avail {
+		start := min(m.scroll, len(lines)-avail)
+		if start+avail < len(lines) {
+			shown = append(slices.Clone(lines[start:start+avail-1]), dim.Render("↓ more (↑↓ scroll)"))
+		} else {
+			shown = lines[start:]
+		}
 	}
 	return strings.Join([]string{
 		dim.Render(fmt.Sprintf("Lesson %d of %d   page %d of %d",
@@ -529,9 +565,9 @@ func (m Model) teachingView() string {
 		"",
 		bar.Render(typeLabel(l.Type) + " " + name),
 		"",
-		text,
+		strings.Join(shown, "\n"),
 		"",
-		dim.Render("← → pages   enter next   q dashboard   esc quit"),
+		dim.Render("← → pages   ↑↓ scroll   enter next   q dashboard   esc quit"),
 	}, "\n")
 }
 
