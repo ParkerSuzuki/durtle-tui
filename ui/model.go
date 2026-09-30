@@ -63,7 +63,8 @@ type Model struct {
 	lostErr       error // why the last one was lost
 	quitting      bool
 	width         int
-	bigText       bool // draw characters with kitty's text sizing protocol
+	bigText       bool   // draw characters with kitty's text sizing protocol
+	bigDrawn      string // bigKey of the last big-glyph draw
 }
 
 // New builds the UI. bigText turns on large characters, which only kitty
@@ -114,17 +115,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	next, cmd := m.update(msg)
-	if nm := next.(Model); nm.bigText && nm.screen == reviewing {
+	nm := next.(Model)
+	if key := nm.bigKey(); nm.bigText && key != "" && key != nm.bigDrawn {
 		// ponytail: timing hack. Bubble Tea's renderer drops kitty's text
 		// sizing escape, so the big characters are written straight to the
-		// terminal a moment after each frame. If the renderer ever repaints
-		// the block later than bigTextDelay, the glyph vanishes until the
-		// next message (the cursor blink brings it back within a second).
+		// terminal a moment after the frame that changed the block. Only
+		// then: the renderer leaves unchanged rows alone, and redrawing on
+		// every keystroke made kitty repaint the glyph constantly and lag
+		// typing. If the renderer ever repaints the block on its own, the
+		// glyph vanishes until the next item or resize.
 		// Upgrade path: renderer support for OSC 66, if Bubble Tea adds it.
+		nm.bigDrawn = key
 		redraw := tea.Tick(bigTextDelay, func(time.Time) tea.Msg { return drawBigMsg{} })
 		cmd = tea.Batch(cmd, redraw)
 	}
-	return next, cmd
+	return nm, cmd
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {

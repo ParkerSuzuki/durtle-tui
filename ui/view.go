@@ -122,6 +122,19 @@ func (m Model) bigScale(chars string) int {
 	return 0
 }
 
+// bigKey identifies what the character block shows. The big glyph only
+// needs redrawing when this changes: a new item, a resize, or a new screen.
+func (m Model) bigKey() string {
+	if m.screen != reviewing {
+		return ""
+	}
+	it, _, ok := m.session.Current()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%d|%s|%d", it.AssignmentID, it.Characters, m.width)
+}
+
 // bigCharsSeq returns the raw escape sequence that draws the current
 // characters at kitty text scale over the empty block row, or "" when big
 // text does not apply. It saves the cursor, repaints the rows the glyph

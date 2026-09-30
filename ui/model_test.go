@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -251,5 +252,70 @@ func TestBigCharsRedrawScheduled(t *testing.T) {
 	plain, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
 	if _, cmd := step(t, plain, tea.WindowSizeMsg{Width: 90, Height: 30}); cmd != nil {
 		t.Error("without big text, a resize schedules nothing")
+	}
+}
+
+// schedulesBigRedraw runs cmd (and each command in a batch) for up to 200ms
+// and reports whether any of them produced drawBigMsg. Slower commands, like
+// the cursor blink, are ignored.
+func schedulesBigRedraw(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	found := make(chan bool, 64)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		go func() {
+			switch msg := c().(type) {
+			case drawBigMsg:
+				found <- true
+			case tea.BatchMsg:
+				for _, sub := range msg {
+					if sub != nil {
+						run(sub)
+					}
+				}
+			}
+		}()
+	}
+	run(cmd)
+	select {
+	case <-found:
+		return true
+	case <-time.After(200 * time.Millisecond):
+		return false
+	}
+}
+
+// Typing never touches the character block, so it must not trigger a
+// big-glyph redraw: each redraw makes kitty repaint three full rows plus the
+// scaled text, which lagged typing on a throttled CPU.
+func TestTypingDoesNotRedrawBigChars(t *testing.T) {
+	kanji := review.Item{AssignmentID: 5, Type: "kanji", Characters: "大",
+		Meanings: []string{"Big"}, Readings: []string{"たい"}}
+	m, _ := step(t, New(&fakeBackend{}, true), loadedMsg{items: []review.Item{ground, kanji}})
+	m, cmd := step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	if !schedulesBigRedraw(cmd) {
+		t.Fatal("first frame must draw the big characters")
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if schedulesBigRedraw(cmd) {
+		t.Error("a keystroke scheduled a big-glyph redraw")
+	}
+	m.input.Reset()
+	for i := 0; i < 2; i++ { // answer until the next item appears
+		it, p, _ := m.session.Current()
+		ans := it.Meanings[0]
+		if p == review.Reading {
+			ans = it.Readings[0]
+		}
+		before := it.AssignmentID
+		m, cmd = typeAndEnter(t, m, ans)
+		if next, _, ok := m.session.Current(); ok && next.AssignmentID != before {
+			if !schedulesBigRedraw(cmd) {
+				t.Error("a new item must redraw the big characters")
+			}
+			return
+		}
 	}
 }
