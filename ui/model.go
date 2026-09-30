@@ -40,6 +40,7 @@ type (
 		err   error
 	}
 	loginMsg     struct{ err error }
+	drawBigMsg   struct{}
 	submittedMsg struct {
 		pending bool
 		err     error
@@ -62,13 +63,16 @@ type Model struct {
 	lostErr       error // why the last one was lost
 	quitting      bool
 	width         int
+	bigText       bool // draw characters with kitty's text sizing protocol
 }
 
-func New(b Backend) Model {
+// New builds the UI. bigText turns on large characters, which only kitty
+// can draw (see bigCharsSeq); other terminals get the normal layout.
+func New(b Backend, bigText bool) Model {
 	in := textinput.New()
 	in.SetWidth(inputWidth) // without a width, the placeholder is cut to one character
 	in.Focus()
-	return Model{backend: b, screen: loading, input: in}
+	return Model{backend: b, screen: loading, input: in, bigText: bigText}
 }
 
 func (m Model) Init() tea.Cmd { return m.load() }
@@ -99,7 +103,31 @@ func (m Model) submit(s review.Submission) tea.Cmd {
 	}
 }
 
+// bigTextDelay is how long after a frame the big characters are drawn.
+const bigTextDelay = 40 * time.Millisecond
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(drawBigMsg); ok {
+		if seq := m.bigCharsSeq(); seq != "" {
+			return m, tea.Raw(seq)
+		}
+		return m, nil
+	}
+	next, cmd := m.update(msg)
+	if nm := next.(Model); nm.bigText && nm.screen == reviewing {
+		// ponytail: timing hack. Bubble Tea's renderer drops kitty's text
+		// sizing escape, so the big characters are written straight to the
+		// terminal a moment after each frame. If the renderer ever repaints
+		// the block later than bigTextDelay, the glyph vanishes until the
+		// next message (the cursor blink brings it back within a second).
+		// Upgrade path: renderer support for OSC 66, if Bubble Tea adds it.
+		redraw := tea.Tick(bigTextDelay, func(time.Time) tea.Msg { return drawBigMsg{} })
+		cmd = tea.Batch(cmd, redraw)
+	}
+	return next, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width

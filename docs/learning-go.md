@@ -459,3 +459,43 @@ by the input's width, and the width defaults to 0. The fix is one line,
 Two lessons: the module cache holds the exact source of every dependency,
 so reading it is often the fastest way to understand a library; and a
 screen you have never looked at is a screen you have not tested.
+
+## 10. Wrapping a method, raw terminal output, and environment checks
+
+Code: [ui/model.go](../ui/model.go) (`Update`, `update`), [ui/view.go](../ui/view.go) (`bigCharsSeq`), [main.go](../main.go) (`bigTextSupported`)
+
+**Wrapping instead of editing every branch.** Big characters must be redrawn
+after *every* update. Rather than adding a line to each `case`, the old
+`Update` was renamed to lowercase `update`, and a new exported `Update`
+calls it and adds one extra command. Lowercase means unexported: only the
+wrapper is part of the `tea.Model` contract. Its one type assertion,
+`next.(Model)`, turns the returned `tea.Model` interface back into the
+concrete type to read its fields.
+
+**`tea.Batch` and `tea.Tick`.** `Batch` runs several commands concurrently
+and delivers each message as it arrives; `Tick(d, fn)` waits `d` and then
+sends `fn`'s message. Together they say "also, 40 ms from now, send me
+`drawBigMsg`". A `nil` command inside `Batch` is fine, which is why the
+wrapper does not need to check.
+
+**Escape sequences are just strings.** `bigCharsSeq` builds the terminal
+commands with `fmt.Fprintf` into a `strings.Builder`: `\x1b7` saves the
+cursor, `\x1b[row;colH` moves it, `\x1b[48;2;r;g;bm` sets a 24-bit
+background, `\x1b]66;s=3;訓練\x07` is kitty's "draw this at 3x", and
+`\x1b8` restores the cursor. `fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b)`
+parses the palette's hex colors back into numbers, reusing one source of
+truth for the colors.
+
+**Constants with arithmetic.** `charRow = 1 + 1 + 1 + blockPadding + 1` is
+computed at compile time and documents *why* the row is 7. A test checks it
+against the rendered view, so changing the layout without updating the
+constant fails loudly instead of drawing the glyph in the wrong place.
+
+**Feature detection through the environment.** `os.Getenv("KITTY_WINDOW_ID")`
+is empty unless kitty launched the process. Detection lives in `main`, and
+`ui.New` takes a plain `bool`, so tests never depend on which terminal runs
+them.
+
+**`ponytail:` comments** mark a deliberate shortcut with its limit and
+upgrade path, so the next person (or a Bubble Tea upgrade) knows exactly
+what to check.

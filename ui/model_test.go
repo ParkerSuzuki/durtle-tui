@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func typeAndEnter(t *testing.T, m Model, text string) (Model, tea.Cmd) {
 }
 
 func TestNoTokenShowsOnboarding(t *testing.T) {
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{err: wanikani.ErrUnauthorized})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{err: wanikani.ErrUnauthorized})
 	if m.screen != onboarding {
 		t.Errorf("screen = %v, want onboarding", m.screen)
 	}
@@ -54,7 +55,7 @@ func TestNoTokenShowsOnboarding(t *testing.T) {
 
 func TestReviewFlowSubmits(t *testing.T) {
 	fb := &fakeBackend{items: []review.Item{ground}}
-	m, _ := step(t, New(fb), loadedMsg{items: fb.items})
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
 	if m.screen != reviewing {
 		t.Fatalf("screen = %v, want reviewing", m.screen)
 	}
@@ -75,7 +76,7 @@ func TestReviewFlowSubmits(t *testing.T) {
 
 func TestQuitWaitsForSubmits(t *testing.T) {
 	fb := &fakeBackend{items: []review.Item{ground}}
-	m, _ := step(t, New(fb), loadedMsg{items: fb.items})
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
 	m, submit := typeAndEnter(t, m, "ground")
 	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd != nil || !m.quitting {
@@ -91,7 +92,7 @@ func TestQuitWaitsForSubmits(t *testing.T) {
 }
 
 func TestOnboardingShowsFullPlaceholder(t *testing.T) {
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{err: wanikani.ErrUnauthorized})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{err: wanikani.ErrUnauthorized})
 	// Strip color codes: the cursor highlight splits "p" from "aste".
 	got := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(m.View().Content, "")
 	if !strings.Contains(got, "paste your API token") {
@@ -103,7 +104,7 @@ func TestOnboardingShowsFullPlaceholder(t *testing.T) {
 // with the reason, not blamed on WaniKani.
 func TestSaveFailureIsReportedAsLost(t *testing.T) {
 	fb := &fakeBackend{items: []review.Item{ground}, submitErr: errors.New("disk full")}
-	m, _ := step(t, New(fb), loadedMsg{items: fb.items})
+	m, _ := step(t, New(fb, false), loadedMsg{items: fb.items})
 	m, submit := typeAndEnter(t, m, "ground")
 	m, _ = step(t, m, submit())
 	if m.rejected != 0 {
@@ -119,7 +120,7 @@ func TestSaveFailureIsReportedAsLost(t *testing.T) {
 func TestReadingEditMidAnswer(t *testing.T) {
 	woman := review.Item{AssignmentID: 3, Type: "vocabulary", Characters: "女",
 		Meanings: []string{"Woman"}, Readings: []string{"おんな"}}
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{woman}})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{woman}})
 	if _, part, _ := m.session.Current(); part == review.Meaning {
 		m, _ = typeAndEnter(t, m, "woman")
 	}
@@ -135,7 +136,7 @@ func TestReadingEditMidAnswer(t *testing.T) {
 
 // The review screen spans the terminal and follows resizes.
 func TestReviewFillsTerminalWidth(t *testing.T) {
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
 	for _, width := range []int{80, 120, 60} {
 		m, _ = step(t, m, tea.WindowSizeMsg{Width: width, Height: 30})
 		lines := strings.Split(m.View().Content, "\n")
@@ -174,7 +175,7 @@ func lineIndex(lines []string, sub string) int {
 }
 
 func TestCharacterBlockIsTall(t *testing.T) {
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
 	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
 	lines := strings.Split(m.View().Content, "\n")
 	top, bar := lineIndex(lines, "done"), lineIndex(lines, "Radical meaning")
@@ -184,7 +185,7 @@ func TestCharacterBlockIsTall(t *testing.T) {
 }
 
 func TestAnswerInputIsCentered(t *testing.T) {
-	m, _ := step(t, New(&fakeBackend{}), loadedMsg{items: []review.Item{ground}})
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
 	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
 	m.input.SetValue("ground")
 	lines := strings.Split(stripANSI(m.View().Content), "\n")
@@ -193,5 +194,62 @@ func TestAnswerInputIsCentered(t *testing.T) {
 	right := 80 - left - lipgloss.Width("ground")
 	if d := left - right; d < -3 || d > 3 {
 		t.Errorf("answer not centered: %d cells left, %d right\n%q", left, right, line)
+	}
+}
+
+// bigModel is a review screen at width 80 with kitty big text on.
+func bigModel(t *testing.T, item review.Item) Model {
+	t.Helper()
+	m, _ := step(t, New(&fakeBackend{}, true), loadedMsg{items: []review.Item{item}})
+	m, _ = step(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	return m
+}
+
+func TestBigCharsSequence(t *testing.T) {
+	// charRow must be where the normal layout actually puts the characters.
+	plain, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	plain, _ = step(t, plain, tea.WindowSizeMsg{Width: 80, Height: 30})
+	if got := lineIndex(strings.Split(plain.View().Content, "\n"), "一") + 1; got != charRow {
+		t.Fatalf("characters are on row %d, charRow = %d", got, charRow)
+	}
+
+	m := bigModel(t, ground)
+	seq := m.bigCharsSeq()
+	if !strings.Contains(seq, "\x1b]66;s=3;一\x07") {
+		t.Errorf("no 3x text sizing sequence in %q", seq)
+	}
+	col := pagePadding + (76-2*3)/2 + 1 // inner width 76, 一 is 2 cells wide at 1x
+	if want := fmt.Sprintf("\x1b[%d;%dH", charRow-1, col); !strings.Contains(seq, want) {
+		t.Errorf("glyph not placed at row %d col %d: %q", charRow-1, col, seq)
+	}
+	if strings.Contains(m.View().Content, "一") {
+		t.Error("with big text on, the view must leave the block empty for the big glyph")
+	}
+}
+
+func TestBigCharsFallBackWhenTooWide(t *testing.T) {
+	long := review.Item{AssignmentID: 4, Type: "vocabulary", Characters: "一二三四五六七八九十一二三四",
+		Meanings: []string{"x"}, Readings: []string{"x"}}
+	m := bigModel(t, long) // 28 cells: too wide at 3x (84 cells), fits at 2x (56)
+	if !strings.Contains(m.bigCharsSeq(), "s=2;") {
+		t.Errorf("28-cell word in a 76-cell block should drop to 2x: %q", m.bigCharsSeq())
+	}
+	m, _ = step(t, m, tea.WindowSizeMsg{Width: 40, Height: 30})
+	if m.bigCharsSeq() != "" || !strings.Contains(m.View().Content, "一二三") {
+		t.Error("when no scale fits, draw the characters normally")
+	}
+}
+
+func TestBigCharsRedrawScheduled(t *testing.T) {
+	m := bigModel(t, ground)
+	if _, cmd := step(t, m, tea.WindowSizeMsg{Width: 90, Height: 30}); cmd == nil {
+		t.Error("a resize must schedule a big-glyph redraw")
+	}
+	if _, cmd := step(t, m, drawBigMsg{}); cmd == nil {
+		t.Error("drawBigMsg must write the glyph")
+	}
+	plain, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{ground}})
+	if _, cmd := step(t, plain, tea.WindowSizeMsg{Width: 90, Height: 30}); cmd != nil {
+		t.Error("without big text, a resize schedules nothing")
 	}
 }

@@ -9,8 +9,15 @@ import (
 	"github.com/ParkerSuzuki/durtle-tui/review"
 )
 
-// pagePadding is the blank columns left and right of every screen.
-const pagePadding = 2
+const (
+	// pagePadding is the blank columns left and right of every screen.
+	pagePadding = 2
+	// blockPadding is the blank rows above and below the characters.
+	blockPadding = 3
+	// charRow is the 1-based terminal row the characters sit on: the page's
+	// top padding, the progress line, a blank line, the block's top padding.
+	charRow = 1 + 1 + 1 + blockPadding + 1
+)
 
 var (
 	typeColors = map[string]string{
@@ -70,7 +77,7 @@ func (m Model) onboardingView() string {
 func (m Model) reviewView() string {
 	item, part, _ := m.session.Current()
 	done := len(m.session.Results())
-	charStyle := lipgloss.NewStyle().Bold(true).Padding(3, 4).
+	charStyle := lipgloss.NewStyle().Bold(true).Padding(blockPadding, 4).
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Background(lipgloss.Color(typeColors[item.Type]))
 	chars := charStyle.Render(item.Characters)
@@ -81,7 +88,11 @@ func (m Model) reviewView() string {
 	if w := m.innerWidth(); w > 0 {
 		// Span the terminal, content centered. Styles are values, so these
 		// calls change local copies, not the shared package-level styles.
-		chars = charStyle.Width(w).Align(lipgloss.Center).Render(item.Characters)
+		shown := item.Characters
+		if m.bigScale(shown) > 0 {
+			shown = " " // leave the row empty; bigCharsSeq draws on top
+		}
+		chars = charStyle.Width(w).Align(lipgloss.Center).Render(shown)
 		bar = bar.Width(w).Align(lipgloss.Center)
 	}
 	prompt := bar.Render(fmt.Sprintf("%s %s", typeLabel(item.Type), part))
@@ -95,6 +106,54 @@ func (m Model) reviewView() string {
 		"",
 		m.feedback,
 	}, "\n")
+}
+
+// bigScale is the largest kitty text scale (3, then 2) at which chars fit
+// in the block, or 0 to draw them at normal size.
+func (m Model) bigScale(chars string) int {
+	if !m.bigText {
+		return 0
+	}
+	for _, s := range []int{3, 2} {
+		if lipgloss.Width(chars)*s <= m.innerWidth()-4 {
+			return s
+		}
+	}
+	return 0
+}
+
+// bigCharsSeq returns the raw escape sequence that draws the current
+// characters at kitty text scale over the empty block row, or "" when big
+// text does not apply. It saves the cursor, repaints the rows the glyph
+// covers with the block color (so a shorter word leaves no ghosts), writes
+// the scaled text with OSC 66, and restores the cursor.
+// Protocol: https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
+func (m Model) bigCharsSeq() string {
+	if m.screen != reviewing {
+		return "" // a late redraw after the session ended, or before it began
+	}
+	item, _, ok := m.session.Current()
+	if !ok {
+		return ""
+	}
+	s := m.bigScale(item.Characters)
+	if s == 0 {
+		return ""
+	}
+	var r, g, b uint8
+	fmt.Sscanf(typeColors[item.Type], "#%02x%02x%02x", &r, &g, &b)
+	bg := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
+	w := m.innerWidth()
+	top := charRow - (s-1)/2
+	var sb strings.Builder
+	sb.WriteString("\x1b7")
+	for row := top; row < top+s; row++ {
+		fmt.Fprintf(&sb, "\x1b[%d;%dH%s%s", row, pagePadding+1, bg, strings.Repeat(" ", w))
+	}
+	col := pagePadding + (w-lipgloss.Width(item.Characters)*s)/2 + 1
+	fmt.Fprintf(&sb, "\x1b[%d;%dH%s\x1b[1;38;2;255;255;255m\x1b]66;s=%d;%s\x07\x1b[0m\x1b8",
+		top, col, bg, s, item.Characters)
+	return sb.String()
 }
 
 // answerView centers the typed answer under the prompt bar. The input is

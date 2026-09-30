@@ -169,3 +169,11 @@ grant, longer).
 **Decision:** The character block gets 3 blank rows above and below (7 rows total). The answer input drops its `> ` prompt, is sized to its text, and is centered, so it grows from the middle as you type.
 **Why:** Terminals draw every character at one font size, so "bigger" in plain terminal cells means more colored space. Sizing the input to its text is the simplest way to center text inside a Bubbles textinput, which only aligns left.
 **Passed on:** Real 2x/3x glyphs via kitty's text sizing protocol for now; a throwaway spike is checking whether Bubble Tea's renderer tolerates it.
+
+## 19. Big characters in kitty via the text sizing protocol (2026-09-30)
+
+**Context:** The user wanted the kanji themselves bigger, not just the block around them. Terminals draw one font size; kitty 0.40+ can draw text at 2x or 3x with OSC 66.
+**Decision:** In kitty (and not inside tmux), the view leaves the character row empty and a command 40 ms after each update writes the characters at 3x (2x if too wide, normal size if neither fits) straight to the terminal with `tea.Raw`. Other terminals keep the normal layout.
+**Why:** A throwaway spike showed Bubble Tea v2's renderer strips OSC 66 from the view, but raw output after the frame works, including across keypresses and resizes. The worst failure is cosmetic: the glyph vanishes until the next message.
+**Known limit:** It is a timing hack, marked with a `ponytail:` comment in `ui/model.go`. A Bubble Tea upgrade that changes when frames are painted could break it; check the review screen after upgrading.
+**Passed on:** A taller block only (decision 18 stays as the fallback); putting OSC 66 in the view (stripped by the renderer).
