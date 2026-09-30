@@ -7,6 +7,7 @@ import (
 	"image"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -489,5 +490,43 @@ func TestSubmitWritesAhead(t *testing.T) {
 	}
 	if got := readPending(t, b); len(got) != 0 {
 		t.Errorf("after success, pending.json = %v; want empty", got)
+	}
+}
+
+// Settings files: hand edits keep their values and missing fields get
+// defaults; a corrupt file is backed up, not silently lost; an unwritable
+// config dir does not stop the dashboard.
+func TestSettingsFileHandling(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "durtle-tui", "settings.json")
+	b := &backend{dir: t.TempDir()}
+
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte(`{"daily_cap":1}`), 0o600)
+	s, err := b.loadSettings(4)
+	if err != nil || s.DailyCap != 1 || s.BatchSize != 4 || !s.Types.Kanji {
+		t.Errorf("partial file: %+v, %v; want cap 1 kept, batch 4 from WaniKani, types on", s, err)
+	}
+
+	os.WriteFile(path, []byte(`{not json`), 0o600)
+	if s, err = b.loadSettings(4); err != nil || s.DailyCap != 10 {
+		t.Errorf("corrupt file: %+v, %v; want defaults", s, err)
+	}
+	if bad, _ := os.ReadFile(path + ".bad"); string(bad) != "{not json" {
+		t.Errorf("corrupt file not backed up: %q", bad)
+	}
+
+	os.Remove(path)
+	b.wkBatch = 6 // learned from an earlier dashboard load
+	if s, _ = b.Settings(); s.BatchSize != 6 {
+		t.Errorf("settings screen seeded batch %d, want the WaniKani value 6", s.BatchSize)
+	}
+
+	os.Remove(path)
+	os.Chmod(filepath.Dir(path), 0o500) // read-only config dir
+	t.Cleanup(func() { os.Chmod(filepath.Dir(path), 0o700) })
+	if s, err = b.loadSettings(4); err != nil || s.DailyCap != 10 {
+		t.Errorf("unwritable config dir: %+v, %v; want defaults in memory, no error", s, err)
 	}
 }

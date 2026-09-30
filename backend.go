@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,7 +31,9 @@ type backend struct {
 	dir    string // cache directory
 	base   string // API base URL
 	client *wanikani.Client
-	mu     sync.Mutex // guards pending.json; submits run concurrently
+	mu     sync.Mutex // guards pending.json and wkBatch; commands run concurrently
+
+	wkBatch int // the user's WaniKani lesson batch size, once a sync has seen it
 }
 
 // Cache versions change whenever the cached type gains fields, so an older
@@ -459,17 +463,34 @@ func readingKind(t string) string {
 	return t // "nanori" or ""
 }
 
-// loadSettings reads settings.json, clamped. A missing or corrupt file is
-// replaced by defaults seeded with the user's WaniKani batch size.
+// loadSettings reads settings.json over the defaults, so a hand-edited file
+// keeps its values and missing fields get defaults (batch size seeded from
+// WaniKani). A corrupt file is kept as settings.json.bad and replaced. If the
+// defaults cannot be written (read-only config dir), they are used anyway.
 func (b *backend) loadSettings(waniKaniBatch int) (lessons.Settings, error) {
+	b.mu.Lock()
+	if waniKaniBatch > 0 {
+		b.wkBatch = waniKaniBatch
+	}
+	batch := b.wkBatch
+	b.mu.Unlock()
+	s := lessons.Default(batch)
 	path, err := store.ConfigFile("settings.json")
 	if err != nil {
-		return lessons.Settings{}, err
+		return s, nil
 	}
-	var s lessons.Settings
-	if err := store.ReadJSON(path, &s); err != nil || s == (lessons.Settings{}) {
-		s = lessons.Default(waniKaniBatch)
-		return s, store.WriteJSON(path, s)
+	raw, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		_ = store.WriteJSON(path, s) // best effort: defaults work without the file
+		return s, nil
+	case err != nil:
+		return s, nil
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		_ = os.WriteFile(path+".bad", raw, 0o600) // keep the user's edits to fix by hand
+		s = lessons.Default(batch)
+		_ = store.WriteJSON(path, s)
 	}
 	return s.Clamp(), nil
 }
