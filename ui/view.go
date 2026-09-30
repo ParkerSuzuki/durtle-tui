@@ -111,6 +111,9 @@ func (m Model) summaryView() string {
 	if m.rejected > 0 {
 		lines = append(lines, fmt.Sprintf("%d refused by WaniKani (probably already reviewed elsewhere).", m.rejected))
 	}
+	if m.lost > 0 {
+		lines = append(lines, fmt.Sprintf("%d could not be sent or saved (%v). Redo them on the website.", m.lost, m.lostErr))
+	}
 	lines = append(lines, "", dim.Render("Enter or Esc to quit"))
 	return strings.Join(lines, "\n")
 }

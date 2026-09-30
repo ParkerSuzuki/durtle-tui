@@ -97,6 +97,11 @@ func TestSubmitPendingAndRejected(t *testing.T) {
 		t.Error("401: answer must be saved, not lost")
 	}
 
+	b, _ = fakeAPI(t, http.StatusForbidden)
+	if pending, _ := b.Submit(ctx, sub); !pending {
+		t.Error("403 (token lacks reviews:create): answer must be saved, not lost")
+	}
+
 	b, _ = fakeAPI(t, http.StatusUnprocessableEntity)
 	if pending, err := b.Submit(ctx, sub); pending || err == nil {
 		t.Errorf("422: pending=%v err=%v, want rejected and not queued", pending, err)

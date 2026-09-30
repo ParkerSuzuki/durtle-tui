@@ -55,9 +55,11 @@ type Model struct {
 	feedback      string
 	showingAnswer bool // a wrong answer is on screen; Enter continues
 	err           error
-	inFlight      int // submits not yet finished
-	pending       int // saved to retry next launch
-	rejected      int // refused by WaniKani
+	inFlight      int   // submits not yet finished
+	pending       int   // saved to retry next launch
+	rejected      int   // refused by WaniKani
+	lost          int   // could not be sent or saved
+	lostErr       error // why the last one was lost
 	quitting      bool
 	width         int
 }
@@ -117,9 +119,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.load()
 	case submittedMsg:
 		m.inFlight--
+		var apiErr *wanikani.APIError
 		switch {
-		case msg.err != nil:
+		case errors.As(msg.err, &apiErr):
 			m.rejected++
+		case msg.err != nil:
+			m.lost++
+			m.lostErr = msg.err
 		case msg.pending:
 			m.pending++
 		}
@@ -143,8 +149,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	if m.screen == reviewing {
 		if _, part, ok := m.session.Current(); ok && part == review.Reading {
-			m.input.SetValue(review.ToHiragana(m.input.Value(), false))
-			m.input.CursorEnd()
+			m.input = convertBeforeCursor(m.input)
 		}
 	}
 	return m, cmd
@@ -226,6 +231,22 @@ func (m Model) answer() (tea.Model, tea.Cmd) {
 		m.screen = summary
 	}
 	return m, cmd
+}
+
+// convertBeforeCursor turns romaji to the left of the cursor into kana and
+// keeps the cursor just after it, so editing mid-answer works. Text after
+// the cursor is already converted and is left alone.
+func convertBeforeCursor(in textinput.Model) textinput.Model {
+	runes := []rune(in.Value())
+	pos := min(in.Position(), len(runes))
+	typed := string(runes[:pos])
+	kana := review.ToHiragana(typed, false)
+	if kana == typed {
+		return in
+	}
+	in.SetValue(kana + string(runes[pos:]))
+	in.SetCursor(len([]rune(kana)))
+	return in
 }
 
 func accepted(it review.Item, p review.Part) []string {

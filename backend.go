@@ -170,11 +170,13 @@ func (b *backend) flushPending(ctx context.Context) error {
 func (b *backend) pendingPath() string { return filepath.Join(b.dir, "pending.json") }
 
 // rejected reports whether WaniKani refused the review itself (a 4xx other
-// than 401 or 429), so retrying it later would never succeed.
+// than 401, 403 or 429), so retrying it later would never succeed. 403 means
+// the token lacks reviews:create: the answer is fine, the token is not, so
+// it is kept for after the user fixes the token.
 func rejected(err error) bool {
 	var apiErr *wanikani.APIError
 	return errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 &&
-		apiErr.Status != 401 && apiErr.Status != 429
+		apiErr.Status != 401 && apiErr.Status != 403 && apiErr.Status != 429
 }
 
 // buildItems joins due assignments with their subjects and the user's
