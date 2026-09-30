@@ -187,3 +187,17 @@ grant, longer).
 **Decision:** The backend downloads a due radical's SVG once into `~/.cache/durtle-tui/radicals/`, with no API token (it is a public file host). The `rsvg-convert` command rasterizes it to a 20x20 PNG, Go's `image/png` decodes it, and the UI draws it as 10 rows of half-block characters (▀ ▄ █) in a block that grows from 7 to 10 rows for these items. Without `rsvg-convert` (or on a failed download) the radical is skipped and the summary says so. The subject cache gained a version number so the new image field forces one full resync.
 **Why:** Half-blocks work in every terminal, including herdr. `rsvg-convert` is already installed on this machine and needs no new Go dependencies. The 10-row size was chosen from rendered previews; 7 rows was recognizable but rough.
 **Passed on:** A pure-Go SVG library (two new modules, and likely unable to read WaniKani's CSS-styled SVGs without rewriting them); a kitty graphics image (sharpest, but kitty only and not in herdr; could be layered on later); shipping pre-rendered images in the repo (redistributes WaniKani artwork, which the API terms forbid).
+
+## 21. Dashboard data: assignment cache plus /summary (2026-09-30)
+
+**Context:** The dashboard needs counts now, an hourly forecast, level progress, and an SRS breakdown, refreshed often without hammering the 60 requests per minute limit.
+**Decision:** Cache all assignments in `assignments.json`, synced incrementally with `updated_after` and versioned like the subject cache. Level progress and the SRS breakdown are computed from it (plus cached subjects, which gain `level` and `hidden_at`). "Available now" and the forecast come from `GET /summary`, fetched fresh each refresh. The math lives in a new pure package, `dashboard`.
+**Why:** One data set feeds two panels, and after the first sync a refresh costs about four small requests. `/summary` already groups reviews by hour, so the forecast needs no computation over assignments.
+**Passed on:** Fresh counts per refresh via `total_count` (about seven requests, some downloading hundreds of records to read one number); putting the math in `ui` (untestable without a screen).
+
+## 22. Open on the dashboard (2026-09-30)
+
+**Context:** Milestone 1 launched straight into reviews and quit after the summary.
+**Decision:** durtle-tui opens on the dashboard. `r` or Enter starts reviews when any are available; the summary's Enter returns to a refreshed dashboard; `q` or Esc quits from the dashboard.
+**Why:** It is how the website works and makes durtle-tui a place to check in, not only a review runner.
+**Passed on:** A separate `durtle-tui dash` command (two entry points to remember).
