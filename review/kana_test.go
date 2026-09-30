@@ -25,6 +25,14 @@ func TestToHiragana(t *testing.T) {
 		{"honn", false, "ほnn"},
 		{"ky", false, "ky"},
 		{"かn", true, "かん"},
+		{"shimbun", true, "しんぶん"},
+		{"sampo", true, "さんぽ"},
+		{"vu", true, "ゔ"},
+		{"dya", true, "ぢゃ"},
+		{"dyu", true, "ぢゅ"},
+		{"xtsu", true, "っ"},
+		{"wi", true, "うぃ"},
+		{"shimb", false, "しんb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -42,6 +50,8 @@ func TestLiveTyping(t *testing.T) {
 		{"kitte", "きって"},
 		{"shinnyuu", "しんにゅう"},
 		{"hon", "ほん"},
+		{"shimbun", "しんぶん"},
+		{"xtsu", "っ"},
 	} {
 		v := ""
 		for _, k := range tt.keys {
