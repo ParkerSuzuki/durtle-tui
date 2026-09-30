@@ -223,6 +223,12 @@ func syncResources[T any](path string, version int,
 		cache.Items[r.ID] = r
 	}
 	cache.SyncedAt = newest(cache.SyncedAt, fresh)
+	if len(fresh) == 0 {
+		// Nothing changed: skip rewriting the file (subjects.json is ~15 MB).
+		// ponytail: the file is still read on every refresh (~0.25 s for
+		// subjects); keep the maps in memory if refreshes ever feel slow.
+		return cache.Items, nil
+	}
 	return cache.Items, store.WriteJSON(path, cache)
 }
 

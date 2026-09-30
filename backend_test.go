@@ -530,3 +530,30 @@ func TestSettingsFileHandling(t *testing.T) {
 		t.Errorf("unwritable config dir: %+v, %v; want defaults in memory, no error", s, err)
 	}
 }
+
+// A sync that brings no changes must not rewrite the cache file (the subject
+// cache is about 15 MB; rewriting it on every refresh wastes time).
+func TestSyncWithoutChangesDoesNotRewrite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("updated_after") == "" {
+			fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"kanji","data_updated_at":"2026-01-02T00:00:00Z","data":{}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client = wanikani.NewClient(b.base, "tok")
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(b.dir, "subjects.json")
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(path, past, past)
+	if _, err := b.syncSubjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(path); !info.ModTime().Equal(past) {
+		t.Errorf("unchanged sync rewrote the cache (mtime %v)", info.ModTime())
+	}
+}
