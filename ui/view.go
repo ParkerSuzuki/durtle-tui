@@ -60,11 +60,13 @@ func (m Model) View() tea.View {
 		body = m.settingsView()
 	case failed:
 		what := "sync with WaniKani"
-		switch {
-		case m.loadingLessons:
+		switch m.what {
+		case loadLessons:
 			what = "load lessons"
-		case m.loadingReviews:
+		case loadReviews:
 			what = "load reviews"
+		case loadMistakes:
+			what = "load recent mistakes"
 		}
 		body = fmt.Sprintf("Could not %s:\n\n%v\n\n%s", what, m.err, dim.Render("Enter to retry, Esc to quit"))
 	}
@@ -297,6 +299,12 @@ func (m Model) summaryView() string {
 		title.Render("Session complete"),
 		fmt.Sprintf("%d reviewed, %s correct", len(results), percentCorrect(results)),
 	}
+	if m.practice {
+		lines = []string{
+			title.Render("Practice done"),
+			fmt.Sprintf("%d items, %s correct. Nothing was sent to WaniKani.", len(results), percentCorrect(results)),
+		}
+	}
 	var missed []string
 	for _, r := range results {
 		if r.Submission.IncorrectMeaning+r.Submission.IncorrectReading > 0 {
@@ -392,6 +400,7 @@ func (m Model) homeView() string {
 		"",
 	}
 	lines = append(lines, accuracyLines(d.Today, d.Yesterday, barW)...)
+	lines = append(lines, "", fmt.Sprintf("%-18s %d in the last 24 hours", "Recent mistakes", d.Mistakes))
 	lines = append(lines, "", "Upcoming reviews")
 	lines = append(lines, forecastLines(d.Forecast, barW)...)
 	lines = append(lines, "")
@@ -402,6 +411,9 @@ func (m Model) homeView() string {
 	}
 	if d.LessonsToday > 0 {
 		hint = append(hint, "l lessons")
+	}
+	if d.Mistakes > 0 {
+		hint = append(hint, "m mistakes")
 	}
 	hint = append(hint, "s settings", "q quit")
 	lines = append(lines, "", dim.Render(strings.Join(hint, "   ")))

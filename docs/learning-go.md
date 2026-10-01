@@ -719,3 +719,25 @@ struct grows, which is why `go vet` insists on it across packages.
 has lost its monotonic clock reading and may carry a different location
 pointer, so `==` can say two identical instants differ. `t.Equal(u)`
 compares the instant itself; the pending-answer removal uses it.
+
+## 17. Replacing booleans with an enum when states are exclusive
+
+Code: [ui/model.go](../ui/model.go) (`loadKind`, `reload`, `practice`)
+
+**Two bools were fine; three would not be.** `loadingReviews` and
+`loadingLessons` could both be true by mistake, and every new kind of load
+meant touching each place that reset them (a leak the lesson review caught).
+One field of type `loadKind` can only hold one value, so "which load is
+this?" has exactly one answer, and `reload()` is a single `switch`.
+The zero value, `loadDash`, is the safe default: an unset field means
+"reload the dashboard".
+
+**Modes that are independent stay booleans.** `practice` and `lessonMode`
+describe what the review screen does with a finished item (nothing, start
+it, or submit it); they are set together with the session, not with the
+loading state, so they stay separate flags.
+
+**Keyed literals for growing message structs.**
+`loadedMsg{items: items, skipped: skipped, err: err, practice: true}` reads
+clearly and survived adding the `practice` field without touching the other
+construction sites.

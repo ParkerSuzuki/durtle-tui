@@ -33,6 +33,7 @@ type Dashboard struct {
 	Level, Lessons, Reviews int
 	LessonsToday            int     // lessons the daily cap still allows now (set by the backend)
 	Today, Yesterday        Answers // review accuracy (set by the backend)
+	Mistakes                int     // items answered wrong in the last 24 hours (set by the backend)
 	Forecast                []Hour
 	Progress                Progress
 	SRS                     SRS

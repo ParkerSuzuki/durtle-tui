@@ -259,3 +259,11 @@ grant, longer).
 **Why:** Placeholders are ordinary text, so Bubble Tea's renderer keeps them (verified in its source and with a spike and one real kitty window); no timing hack like the big kanji need. The 256-color form survives any color profile, unlike a 24-bit id.
 **Passed on:** Direct image placement at a cursor position (needs the same timing hack as OSC 66 and breaks on redraws); a pure-Go SVG renderer (decision 20's reasons).
 **Known limit:** Uploaded images are not freed on quit; kitty drops them when the window closes.
+
+## 31. Recent mistakes practice from answer-counter increases (2026-10-01)
+
+**Context:** The user wanted WaniKani's Extra Study "Recent Mistakes": practice items answered wrong in the last 24 hours, without touching SRS. The API has no such endpoint.
+**Decision:** The review-statistics sync (decision 29) also records every subject whose incorrect count grew, at WaniKani's update time, in `mistakes.json`, pruned to 24 hours. The dashboard shows the count; `m` runs them through the review screen in practice mode: same back-to-back quiz, nothing submitted, nothing queued. Items stay listed until they age out, even after a correct practice answer.
+**Why:** It sees mistakes made anywhere (website included) and reuses the quiz with one flag. The loading screen's "what am I loading" state became one small enum (`loadKind`) now that four things can load.
+**Known limits:** A mistake appears after the next dashboard sync. After a long gap between syncs, a mistake is dated by the item's last update, not the wrong answer itself.
+**Passed on:** Logging only durtle-tui's own wrong answers (misses the website); removing an item after a correct practice answer (the website keeps it for the full 24 hours).

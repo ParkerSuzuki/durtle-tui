@@ -72,24 +72,67 @@ type synonymCache struct {
 // syncAccuracy syncs WaniKani's per-subject answer counters and turns every
 // increase into answers on the day it happened (decision 29). Daily totals
 // live in accuracy.json, pruned to the last 30 days.
-func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, error) {
+func (b *backend) syncAccuracy(ctx context.Context) (dashboard.Days, dashboard.Mistakes, error) {
 	daysPath := filepath.Join(b.dir, "accuracy.json")
 	days := dashboard.Days{}
 	if err := store.ReadJSON(daysPath, &days); err != nil || days == nil {
 		days = dashboard.Days{} // corrupt: start the history over
 	}
+	mistakes := b.readMistakes()
 	_, err := syncResources(filepath.Join(b.dir, "review_statistics.json"), statsCacheVersion,
 		func(since time.Time) ([]wanikani.Resource[wanikani.ReviewStatistic], error) {
 			return b.api().ReviewStatistics(ctx, since)
 		},
 		func(old map[int]wanikani.Resource[wanikani.ReviewStatistic], fresh []wanikani.Resource[wanikani.ReviewStatistic]) {
 			dashboard.AddDeltas(days, old, fresh, time.Local)
+			dashboard.AddMistakes(mistakes, old, fresh)
 		})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	days.Prune(time.Now(), 30)
-	return days, store.WriteJSON(daysPath, days)
+	if err := store.WriteJSON(daysPath, days); err != nil {
+		return nil, nil, err
+	}
+	return days, mistakes, store.WriteJSON(b.mistakesPath(), mistakes)
+}
+
+func (b *backend) mistakesPath() string { return filepath.Join(b.dir, "mistakes.json") }
+
+// readMistakes loads recent mistakes, already pruned to the last 24 hours.
+func (b *backend) readMistakes() dashboard.Mistakes {
+	m := dashboard.Mistakes{}
+	if err := store.ReadJSON(b.mistakesPath(), &m); err != nil || m == nil {
+		m = dashboard.Mistakes{} // corrupt: start over
+	}
+	m.Prune(time.Now())
+	return m
+}
+
+// Mistakes returns the items answered wrong in the last 24 hours, as recorded
+// by the last dashboard sync, for a practice session that sends nothing to
+// WaniKani (decision 31).
+func (b *backend) Mistakes(ctx context.Context) (items []review.Item, skipped int, err error) {
+	if err := b.connect(); err != nil {
+		return nil, 0, err
+	}
+	subjects, err := b.syncSubjects(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	synonyms, err := b.syncSynonyms(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	// buildItems works from assignments; practice needs no real assignment,
+	// so each mistake becomes a stand-in one that only names its subject.
+	var missed []wanikani.Resource[wanikani.Assignment]
+	for id := range b.readMistakes() {
+		missed = append(missed, wanikani.Resource[wanikani.Assignment]{ID: id, Data: wanikani.Assignment{SubjectID: id}})
+	}
+	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
+	items, skipped = buildItems(missed, subjects, synonyms, art)
+	return items, skipped, nil
 }
 
 // newest is the latest DataUpdatedAt among rs, or since when none is later.
@@ -155,10 +198,11 @@ func (b *backend) Dashboard(ctx context.Context) (dashboard.Dashboard, error) {
 	}
 	now := time.Now()
 	d := dashboard.Build(now, user.Level, sum, assignments, subjects)
-	days, err := b.syncAccuracy(ctx)
+	days, mistakes, err := b.syncAccuracy(ctx)
 	if err != nil {
 		return none, err
 	}
+	d.Mistakes = len(mistakes)
 	d.Today = days[now.Format(time.DateOnly)]
 	d.Yesterday = days[now.AddDate(0, 0, -1).Format(time.DateOnly)]
 	d.LessonsToday = len(lessons.Pick(lessonCandidates(now, sum, assignments, subjects, b.drawable(ctx)),
