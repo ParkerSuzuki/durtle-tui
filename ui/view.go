@@ -311,16 +311,24 @@ func (m Model) summaryView() string {
 	}
 	var missed []string
 	for _, r := range results {
-		if r.Submission.IncorrectMeaning+r.Submission.IncorrectReading > 0 {
-			name := r.Item.Characters
-			if name == "" {
-				name = "(" + r.Item.Meanings[0] + " radical)"
-			}
-			missed = append(missed, name)
+		wrong := r.Submission.IncorrectMeaning + r.Submission.IncorrectReading
+		if wrong == 0 {
+			continue
 		}
+		name := r.Item.Characters
+		if name == "" {
+			name = "(" + r.Item.Meanings[0] + " radical)"
+		}
+		if !m.practice && r.Item.SRSStage > 0 {
+			name += "  " + dim.Render(review.StageChange(r.Item.SRSStage, wrong))
+		}
+		missed = append(missed, name)
 	}
 	if len(missed) > 0 {
-		lines = append(lines, "Missed: "+strings.Join(missed, "  "))
+		lines = append(lines, "", "Missed:")
+		for _, name := range missed {
+			lines = append(lines, "  "+name)
+		}
 	}
 	if m.inFlight > 0 {
 		lines = append(lines, fmt.Sprintf("Sending %d...", m.inFlight))

@@ -40,7 +40,7 @@ func TestBuildItems(t *testing.T) {
 		2: {ID: 2, Object: "radical", Data: wanikani.Subject{Characters: nil}},
 	}
 	assignments := []wanikani.Resource[wanikani.Assignment]{
-		{ID: 10, Data: wanikani.Assignment{SubjectID: 1}},
+		{ID: 10, Data: wanikani.Assignment{SubjectID: 1, SRSStage: 6}},
 		{ID: 20, Data: wanikani.Assignment{SubjectID: 2}},  // image-only radical: skipped
 		{ID: 30, Data: wanikani.Assignment{SubjectID: 99}}, // unknown subject: skipped
 	}
@@ -49,7 +49,7 @@ func TestBuildItems(t *testing.T) {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
 	it := items[0]
-	if it.AssignmentID != 10 || it.Meanings[0] != "Big" || it.ReadingKind != "on'yomi" {
+	if it.AssignmentID != 10 || it.Meanings[0] != "Big" || it.ReadingKind != "on'yomi" || it.SRSStage != 6 {
 		t.Errorf("item = %+v", it)
 	}
 	for _, want := range []string{"Large", "Huge", "massive"} {

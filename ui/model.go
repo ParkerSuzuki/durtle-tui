@@ -730,6 +730,10 @@ func (m Model) answer() (tea.Model, tea.Cmd) {
 		m.feedback = "Correct"
 	}
 	m.input.Reset()
+	if sub != nil && !m.practice && !m.lessonMode && item.SRSStage > 0 {
+		// A real review just finished: show where the item goes.
+		m.feedback += "   " + review.StageChange(item.SRSStage, sub.IncorrectMeaning+sub.IncorrectReading)
+	}
 	var cmd tea.Cmd
 	if sub != nil && !m.practice { // practice sends nothing
 		m.inFlight++
