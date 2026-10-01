@@ -23,6 +23,7 @@ type Backend interface {
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 	Dashboard(ctx context.Context) (dashboard.Dashboard, error)
 	Mistakes(ctx context.Context) (items []review.Item, skipped int, err error)
+	Details(assignmentID int) (lessons.Lesson, bool) // teaching content of a loaded item
 	Lessons(ctx context.Context) (lessons.Plan, error)
 	StartLesson(ctx context.Context, assignmentID int) error
 	Settings() (lessons.Settings, error)
@@ -44,6 +45,7 @@ const (
 	teaching
 	lessonSummary
 	settingsScreen
+	itemInfo // teaching pages for the item just answered wrong
 )
 
 // loadKind is what the loading screen is waiting for.
@@ -114,11 +116,12 @@ type Model struct {
 	refreshAt     time.Time // when the dashboard reloads itself; stale timers are ignored
 
 	plan            lessons.Plan
-	batchStart      int  // index of the first lesson in the current batch
-	page            int  // teaching page within the batch
-	lessonMode      bool // the reviewing screen is a lesson quiz
-	practice        bool // the reviewing screen is recent-mistakes practice: nothing is sent
-	started         int  // lessons started on WaniKani this session
+	batchStart      int            // index of the first lesson in the current batch
+	page            int            // teaching page within the batch
+	lessonMode      bool           // the reviewing screen is a lesson quiz
+	practice        bool           // the reviewing screen is recent-mistakes practice: nothing is sent
+	info            lessons.Lesson // the item shown on the item-info screen
+	started         int            // lessons started on WaniKani this session
 	startFailed     int
 	startErr        error
 	settings        lessons.Settings // being edited on the settings screen
@@ -238,6 +241,9 @@ func (m Model) startLessons() (tea.Model, tea.Cmd) {
 
 // batch is the lessons being taught or quizzed right now.
 func (m Model) batch() []lessons.Lesson {
+	if m.screen == itemInfo {
+		return []lessons.Lesson{m.info} // the info screen reuses the teaching pages
+	}
 	end := min(m.batchStart+m.plan.BatchSize, len(m.plan.Lessons))
 	return m.plan.Lessons[m.batchStart:end]
 }
@@ -268,6 +274,28 @@ func (m Model) pages() []teachPage {
 		}
 	}
 	return ps
+}
+
+// openInfo shows the teaching pages of the item just answered wrong,
+// starting on the page for the part that was missed.
+func (m Model) openInfo() Model {
+	item, part, ok := m.session.Current()
+	if !ok {
+		return m
+	}
+	l, found := m.backend.Details(item.AssignmentID)
+	if !found {
+		l = lessons.Lesson{Item: item} // no teaching content: still show its answers
+	}
+	m.info, m.screen, m.page, m.scroll, m.bigDrawn = l, itemInfo, 0, 0, ""
+	if part == review.Reading {
+		for i, p := range m.pages() {
+			if p.kind == readingPage {
+				m.page = i
+			}
+		}
+	}
+	return m
 }
 
 // quiz starts the back-to-back quiz on the current batch.
@@ -530,6 +558,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == settingsScreen {
 			return m.settingsKey(msg.String())
+		}
+		if m.screen == itemInfo {
+			last := len(m.pages()) - 1
+			switch msg.String() {
+			case "right":
+				m.page, m.scroll = min(m.page+1, last), 0
+			case "left":
+				m.page, m.scroll = max(m.page-1, 0), 0
+			case "down":
+				lines, avail := m.teachBody()
+				m.scroll = min(m.scroll+1, max(len(lines)-avail, 0))
+			case "up":
+				m.scroll = max(m.scroll-1, 0)
+			case "f", "enter", "esc": // back to the correction; Esc does not quit from here
+				m.screen, m.bigDrawn = reviewing, ""
+			case "ctrl+c":
+				return m.quit()
+			}
+			return m, nil
+		}
+		if m.screen == reviewing && m.showingAnswer && msg.String() == "f" {
+			return m.openInfo(), nil
 		}
 		if m.screen == teaching {
 			last := len(m.pages()) - 1

@@ -35,6 +35,10 @@ type backend struct {
 	mu     sync.Mutex                      // guards pending.json and wkBatch; commands run concurrently
 
 	wkBatch int // the user's WaniKani lesson batch size, once a sync has seen it
+
+	// details is the teaching content of the items last loaded (reviews,
+	// lessons, or practice), by assignment ID, for the item-info key.
+	details map[int]lessons.Lesson
 }
 
 // Cache versions change whenever the cached type gains fields, so an older
@@ -132,6 +136,11 @@ func (b *backend) Mistakes(ctx context.Context) (items []review.Item, skipped in
 	}
 	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, skipped = buildItems(missed, subjects, synonyms, art)
+	byID := make(map[int]wanikani.Resource[wanikani.Assignment], len(missed))
+	for _, a := range missed {
+		byID[a.ID] = a
+	}
+	b.remember(buildLessons(items, byID, subjects))
 	return items, skipped, nil
 }
 
@@ -248,7 +257,32 @@ func (b *backend) Load(ctx context.Context) ([]review.Item, int, error) {
 	}
 	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, skipped := buildItems(assignments, subjects, synonyms, art)
+	byID := make(map[int]wanikani.Resource[wanikani.Assignment], len(assignments))
+	for _, a := range assignments {
+		byID[a.ID] = a
+	}
+	b.remember(buildLessons(items, byID, subjects))
 	return items, skipped, nil
+}
+
+// remember keeps the teaching content of freshly loaded items.
+func (b *backend) remember(ls []lessons.Lesson) {
+	details := make(map[int]lessons.Lesson, len(ls))
+	for _, l := range ls {
+		details[l.AssignmentID] = l
+	}
+	b.mu.Lock()
+	b.details = details
+	b.mu.Unlock()
+}
+
+// Details returns the teaching content (mnemonics, readings, components,
+// sentences) of an item from the last load.
+func (b *backend) Details(assignmentID int) (lessons.Lesson, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l, ok := b.details[assignmentID]
+	return l, ok
 }
 
 // syncResources loads a cached collection from path, fetches what changed
@@ -688,7 +722,9 @@ func (b *backend) Lessons(ctx context.Context) (lessons.Plan, error) {
 	}
 	art := func(s wanikani.Resource[wanikani.Subject]) (image.Image, []byte) { return b.radicalArt(ctx, s) }
 	items, _ := buildItems(due, subjects, synonyms, art)
-	return lessons.Plan{Lessons: buildLessons(items, assignments, subjects), BatchSize: settings.BatchSize}, nil
+	taught := buildLessons(items, assignments, subjects)
+	b.remember(taught)
+	return lessons.Plan{Lessons: taught, BatchSize: settings.BatchSize}, nil
 }
 
 // buildLessons adds each item's teaching content from its subject.

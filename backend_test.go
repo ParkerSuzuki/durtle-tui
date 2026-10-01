@@ -649,3 +649,25 @@ func TestMistakesAcrossSyncs(t *testing.T) {
 		t.Errorf("practice items = %+v, skipped %d, %v", items, skipped, err)
 	}
 }
+
+// Loaded items keep their teaching content in memory for the item-info key.
+func TestDetailsForLoadedItems(t *testing.T) {
+	b := lessonServer(t, false)
+	items, _, err := b.Load(context.Background())
+	if err != nil || len(items) == 0 {
+		t.Fatalf("Load: %d items, %v", len(items), err)
+	}
+	var kanji review.Item
+	for _, it := range items {
+		if it.Characters == "二" {
+			kanji = it
+		}
+	}
+	d, ok := b.Details(kanji.AssignmentID)
+	if !ok || len(d.KanjiReadings) != 2 || len(d.Components) != 1 {
+		t.Errorf("Details for 二 = %+v, %v; want its readings and components", d, ok)
+	}
+	if _, ok := b.Details(987654); ok {
+		t.Error("Details for an unknown item should report false")
+	}
+}
