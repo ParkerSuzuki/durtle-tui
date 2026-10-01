@@ -22,6 +22,7 @@ type Backend interface {
 	Load(ctx context.Context) (items []review.Item, skipped int, err error)
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 	Dashboard(ctx context.Context) (dashboard.Dashboard, error)
+	Mistakes(ctx context.Context) (items []review.Item, skipped int, err error)
 	Lessons(ctx context.Context) (lessons.Plan, error)
 	StartLesson(ctx context.Context, assignmentID int) error
 	Settings() (lessons.Settings, error)
@@ -45,11 +46,22 @@ const (
 	settingsScreen
 )
 
+// loadKind is what the loading screen is waiting for.
+type loadKind int
+
+const (
+	loadDash loadKind = iota
+	loadReviews
+	loadLessons
+	loadMistakes
+)
+
 type (
 	loadedMsg struct {
-		items   []review.Item
-		skipped int // image-only radicals that could not be drawn
-		err     error
+		items    []review.Item
+		skipped  int // image-only radicals that could not be drawn
+		err      error
+		practice bool // recent-mistakes practice, not real reviews
 	}
 	loginMsg     struct{ err error }
 	dashboardMsg struct {
@@ -80,33 +92,33 @@ type (
 
 // Model is the whole UI state. Update returns a changed copy.
 type Model struct {
-	backend        Backend
-	screen         screen
-	input          textinput.Model
-	session        *review.Session
-	feedback       string
-	showingAnswer  bool // a wrong answer is on screen; Enter continues
-	err            error
-	inFlight       int   // submits not yet finished
-	pending        int   // saved to retry next launch
-	rejected       int   // refused by WaniKani
-	lost           int   // could not be sent or saved
-	lostErr        error // why the last one was lost
-	skipped        int   // image-only radicals left for the website
-	quitting       bool
-	width          int
-	bigText        bool   // draw characters with kitty's text sizing protocol
-	bigDrawn       string // bigKey of the last big-glyph draw
-	dash           dashboard.Dashboard
-	loadingReviews bool      // which load a retry repeats: reviews or the dashboard
-	refreshAt      time.Time // when the dashboard reloads itself; stale timers are ignored
+	backend       Backend
+	screen        screen
+	input         textinput.Model
+	session       *review.Session
+	feedback      string
+	showingAnswer bool // a wrong answer is on screen; Enter continues
+	err           error
+	inFlight      int   // submits not yet finished
+	pending       int   // saved to retry next launch
+	rejected      int   // refused by WaniKani
+	lost          int   // could not be sent or saved
+	lostErr       error // why the last one was lost
+	skipped       int   // image-only radicals left for the website
+	quitting      bool
+	width         int
+	bigText       bool   // draw characters with kitty's text sizing protocol
+	bigDrawn      string // bigKey of the last big-glyph draw
+	dash          dashboard.Dashboard
+	what          loadKind  // what the loading screen is loading; a retry repeats it
+	refreshAt     time.Time // when the dashboard reloads itself; stale timers are ignored
 
 	plan            lessons.Plan
 	batchStart      int  // index of the first lesson in the current batch
 	page            int  // teaching page within the batch
 	lessonMode      bool // the reviewing screen is a lesson quiz
-	loadingLessons  bool
-	started         int // lessons started on WaniKani this session
+	practice        bool // the reviewing screen is recent-mistakes practice: nothing is sent
+	started         int  // lessons started on WaniKani this session
 	startFailed     int
 	startErr        error
 	settings        lessons.Settings // being edited on the settings screen
@@ -160,8 +172,8 @@ func (m Model) loadFailed(err error) (tea.Model, tea.Cmd) {
 
 // toDashboard ends the review screens and reloads the dashboard.
 func (m Model) toDashboard() (tea.Model, tea.Cmd) {
-	m.screen, m.loadingReviews = loading, false
-	m.lessonMode, m.loadingLessons = false, false
+	m.screen, m.what = loading, loadDash
+	m.lessonMode, m.practice = false, false
 	m.feedback = ""
 	m.input.Reset()
 	return m, m.loadDashboard()
@@ -194,7 +206,7 @@ func (m Model) startReviews() (tea.Model, tea.Cmd) {
 	if m.dash.Reviews == 0 {
 		return m, nil
 	}
-	m.screen, m.loadingReviews, m.loadingLessons = loading, true, false
+	m.screen, m.what = loading, loadReviews
 	return m, m.load()
 }
 
@@ -220,7 +232,7 @@ func (m Model) startLessons() (tea.Model, tea.Cmd) {
 	if m.dash.LessonsToday == 0 {
 		return m, nil
 	}
-	m.screen, m.loadingReviews, m.loadingLessons = loading, false, true
+	m.screen, m.what = loading, loadLessons
 	return m, m.loadLessons()
 }
 
@@ -289,12 +301,43 @@ func (m Model) startForbidden() bool {
 	return errors.As(m.startErr, &apiErr) && apiErr.Status == 403
 }
 
+// reload repeats whatever the loading screen was loading.
+func (m Model) reload() tea.Cmd {
+	switch m.what {
+	case loadReviews:
+		return m.load()
+	case loadLessons:
+		return m.loadLessons()
+	case loadMistakes:
+		return m.loadMistakes()
+	}
+	return m.loadDashboard()
+}
+
+// startPractice loads recent mistakes as a practice quiz.
+func (m Model) startPractice() (tea.Model, tea.Cmd) {
+	if m.dash.Mistakes == 0 {
+		return m, nil
+	}
+	m.screen, m.what = loading, loadMistakes
+	return m, m.loadMistakes()
+}
+
+func (m Model) loadMistakes() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		items, skipped, err := m.backend.Mistakes(ctx)
+		return loadedMsg{items: items, skipped: skipped, err: err, practice: true}
+	}
+}
+
 func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		items, skipped, err := m.backend.Load(ctx)
-		return loadedMsg{items, skipped, err}
+		return loadedMsg{items: items, skipped: skipped, err: err}
 	}
 }
 
@@ -363,7 +406,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.EchoMode = textinput.EchoNormal
 		m.input.Placeholder = ""
 		m.input.Reset()
-		m.loadingReviews, m.loadingLessons = false, false
+		m.what = loadDash
 		return m, m.loadDashboard()
 	case dashboardMsg:
 		if msg.err != nil {
@@ -476,6 +519,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.startReviews()
 			case "l":
 				return m.startLessons()
+			case "m":
+				return m.startPractice()
 			case "s":
 				return m, m.loadSettings()
 			case "q", "esc", "ctrl+c":
@@ -548,6 +593,7 @@ func (m Model) loaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 		return m.loadFailed(msg.err)
 	}
 	m.run++
+	m.practice = msg.practice
 	m.pending, m.rejected, m.lost, m.lostErr, m.submitForbidden = 0, 0, 0, nil, false // per-session counts
 	m.bigDrawn = ""                                                                   // a new session always draws its first item
 	m.skipped = msg.skipped
@@ -568,13 +614,7 @@ func (m Model) enter() (tea.Model, tea.Cmd) {
 		}
 	case failed:
 		m.screen, m.err = loading, nil
-		if m.loadingLessons {
-			return m, m.loadLessons()
-		}
-		if m.loadingReviews {
-			return m, m.load()
-		}
-		return m, m.loadDashboard()
+		return m, m.reload()
 	case lessonSummary:
 		if m.inFlight > 0 {
 			return m, nil // wait: the dashboard's lesson count needs these starts
@@ -620,7 +660,7 @@ func (m Model) answer() (tea.Model, tea.Cmd) {
 	}
 	m.input.Reset()
 	var cmd tea.Cmd
-	if sub != nil {
+	if sub != nil && !m.practice { // practice sends nothing
 		m.inFlight++
 		if m.lessonMode {
 			cmd = m.startLesson(sub.AssignmentID) // lessons start; they are never reviews

@@ -610,3 +610,42 @@ func TestLoginDuringSubmitIsRaceFree(t *testing.T) {
 	close(release)
 	<-done
 }
+
+// A wrong answer made anywhere shows up as a recent mistake after the next
+// sync, and can be loaded as a practice item.
+func TestMistakesAcrossSyncs(t *testing.T) {
+	incorrect := 1
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"data":{"level":1}}`) })
+	mux.HandleFunc("/summary", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"data":{"lessons":[],"reviews":[]}}`) })
+	for _, p := range []string{"/assignments", "/study_materials"} {
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"pages":{"next_url":null},"data":[]}`) })
+	}
+	mux.HandleFunc("/subjects", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"pages":{"next_url":null},"data":[{"id":7,"object":"kanji","data_updated_at":"2026-01-01T00:00:00Z","data":{"level":1,"characters":"七",
+			"meanings":[{"meaning":"Seven","primary":true,"accepted_answer":true}],
+			"readings":[{"reading":"しち","primary":true,"accepted_answer":true,"type":"onyomi"}]}}]}`)
+	})
+	mux.HandleFunc("/review_statistics", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"pages":{"next_url":null},"data":[{"id":1,"object":"review_statistic","data_updated_at":%q,
+			"data":{"subject_id":7,"meaning_correct":3,"meaning_incorrect":%d,"reading_correct":0,"reading_incorrect":0}}]}`,
+			time.Now().UTC().Format(time.RFC3339Nano), incorrect)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	b := &backend{dir: t.TempDir(), base: srv.URL + "/"}
+	b.client.Store(wanikani.NewClient(b.base, "tok"))
+
+	if d, err := b.Dashboard(context.Background()); err != nil || d.Mistakes != 0 {
+		t.Fatalf("first sync is a baseline: mistakes %d, %v", d.Mistakes, err)
+	}
+	incorrect = 2
+	if d, err := b.Dashboard(context.Background()); err != nil || d.Mistakes != 1 {
+		t.Fatalf("after a wrong answer: mistakes %d, %v; want 1", d.Mistakes, err)
+	}
+	items, skipped, err := b.Mistakes(context.Background())
+	if err != nil || skipped != 0 || len(items) != 1 || items[0].Characters != "七" || !items[0].HasReading() {
+		t.Errorf("practice items = %+v, skipped %d, %v", items, skipped, err)
+	}
+}

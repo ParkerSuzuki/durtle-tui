@@ -32,6 +32,11 @@ type fakeBackend struct {
 	startedIDs []int
 	settings   lessons.Settings
 	saved      []lessons.Settings
+	mistakes   []review.Item
+}
+
+func (f *fakeBackend) Mistakes(context.Context) ([]review.Item, int, error) {
+	return f.mistakes, 0, nil
 }
 
 func (f *fakeBackend) Lessons(context.Context) (lessons.Plan, error) { return f.plan, f.planErr }
@@ -1043,5 +1048,40 @@ func sendsRaw(cmd tea.Cmd, prefix string) bool {
 		return true
 	case <-time.After(200 * time.Millisecond):
 		return false
+	}
+}
+
+// Recent mistakes: m on the dashboard starts a practice quiz that sends
+// nothing to WaniKani and returns to the dashboard.
+func TestPracticeRecentMistakes(t *testing.T) {
+	fb := &fakeBackend{mistakes: []review.Item{ground}}
+	m, _ := step(t, New(fb, false), tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Mistakes: 0}})
+	if next, cmd := step(t, m, tea.KeyPressMsg{Code: 'm', Text: "m"}); cmd != nil || next.screen != home {
+		t.Errorf("m with no mistakes: screen %v, cmd %v", next.screen, cmd)
+	}
+	m, _ = step(t, m, dashboardMsg{d: dashboard.Dashboard{Mistakes: 1}})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Recent mistakes") || !strings.Contains(got, "m mistakes") {
+		t.Errorf("dashboard should show the mistakes line and key:\n%s", got)
+	}
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 'm', Text: "m"})
+	if m.screen != loading || cmd == nil {
+		t.Fatalf("m: screen %v, cmd %v", m.screen, cmd)
+	}
+	if m, _ = step(t, m, cmd()); m.screen != reviewing || !m.practice {
+		t.Fatalf("screen %v practice %v; want a practice quiz", m.screen, m.practice)
+	}
+	m, _ = typeAndEnter(t, m, "sky") // wrong
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd = typeAndEnter(t, m, "ground")
+	if cmd != nil || m.inFlight != 0 || len(fb.submitted) != 0 {
+		t.Errorf("practice sent something: cmd %v, inFlight %d, submitted %v", cmd, m.inFlight, fb.submitted)
+	}
+	got := stripANSI(m.View().Content)
+	if m.screen != summary || !strings.Contains(got, "Practice done") || !strings.Contains(got, "Nothing was sent") {
+		t.Errorf("practice summary:\n%s", got)
+	}
+	if m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != loading || cmd == nil || m.practice {
+		t.Errorf("Enter after practice: screen %v practice %v; want the dashboard loading", m.screen, m.practice)
 	}
 }

@@ -87,3 +87,39 @@ func ZoneOf(a Answers) Zone {
 	}
 	return InZone
 }
+
+// Mistakes maps a subject ID to when it was last answered wrong, for the
+// "recent mistakes" practice (the last 24 hours).
+type Mistakes map[int]time.Time
+
+// MistakeWindow is how long a wrong answer stays in recent mistakes.
+const MistakeWindow = 24 * time.Hour
+
+// AddMistakes records every statistic whose incorrect count (meaning or
+// reading) grew since old, at the time WaniKani last updated it. As with
+// AddDeltas, the first sync has no baseline and records nothing, and a
+// statistic missing from old is a new item compared against zero.
+func AddMistakes(m Mistakes, old map[int]wanikani.Resource[wanikani.ReviewStatistic],
+	fresh []wanikani.Resource[wanikani.ReviewStatistic]) {
+	if len(old) == 0 {
+		return
+	}
+	for _, r := range fresh {
+		prev := old[r.ID].Data
+		if r.Data.Hidden || r.Data.MeaningIncorrect+r.Data.ReadingIncorrect <= prev.MeaningIncorrect+prev.ReadingIncorrect {
+			continue
+		}
+		if r.DataUpdatedAt.After(m[r.Data.SubjectID]) {
+			m[r.Data.SubjectID] = r.DataUpdatedAt
+		}
+	}
+}
+
+// Prune drops mistakes older than MistakeWindow.
+func (m Mistakes) Prune(now time.Time) {
+	for id, at := range m {
+		if now.Sub(at) > MistakeWindow {
+			delete(m, id)
+		}
+	}
+}

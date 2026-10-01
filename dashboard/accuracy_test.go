@@ -63,3 +63,37 @@ func TestPrune(t *testing.T) {
 		t.Errorf("after pruning to 30 days: %v", days)
 	}
 }
+
+func statFor(id, subject int, at time.Time, mi, ri int) wanikani.Resource[wanikani.ReviewStatistic] {
+	return wanikani.Resource[wanikani.ReviewStatistic]{ID: id, DataUpdatedAt: at, Data: wanikani.ReviewStatistic{
+		SubjectID: subject, MeaningCorrect: 5, MeaningIncorrect: mi, ReadingIncorrect: ri}}
+}
+
+func TestAddMistakes(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	earlier := now.Add(-2 * time.Hour)
+	old := map[int]wanikani.Resource[wanikani.ReviewStatistic]{
+		1: statFor(1, 101, earlier, 1, 0),
+		2: statFor(2, 102, earlier, 0, 0),
+		3: statFor(3, 103, earlier, 2, 2),
+	}
+	m := Mistakes{}
+	AddMistakes(m, nil, []wanikani.Resource[wanikani.ReviewStatistic]{statFor(1, 101, now, 9, 9)})
+	if len(m) != 0 {
+		t.Errorf("first sync is a baseline, got %v", m)
+	}
+	AddMistakes(m, old, []wanikani.Resource[wanikani.ReviewStatistic]{
+		statFor(1, 101, now, 2, 0),     // meaning missed again
+		statFor(2, 102, now, 0, 1),     // reading missed
+		statFor(3, 103, now, 2, 2),     // answered, but no new mistakes
+		statFor(4, 104, earlier, 1, 0), // new item, already missed
+	})
+	if len(m) != 3 || !m[101].Equal(now) || !m[102].Equal(now) || !m[104].Equal(earlier) {
+		t.Errorf("mistakes = %v; want subjects 101, 102 (now) and 104 (earlier)", m)
+	}
+	m[999] = now.Add(-25 * time.Hour)
+	m.Prune(now)
+	if _, ok := m[999]; ok || len(m) != 3 {
+		t.Errorf("after pruning to 24 hours: %v", m)
+	}
+}
