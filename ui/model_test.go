@@ -789,7 +789,7 @@ func TestSettingsScreen(t *testing.T) {
 	}
 	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	m, _ = step(t, m, cmd()) // saved
-	want := lessons.Settings{DailyCap: 1, Order: lessons.Interleaved, Types: lessons.Types{Vocabulary: true}, BatchSize: 3}
+	want := lessons.Settings{DailyCap: 1, Order: lessons.Interleaved, Types: lessons.Types{Vocabulary: true}, BatchSize: 3, InfoLayout: lessons.InfoPages}
 	if len(fb.saved) != 1 || fb.saved[0] != want {
 		t.Errorf("saved %+v, want %+v", fb.saved, want)
 	}
@@ -1133,5 +1133,58 @@ func TestItemInfoAfterWrongAnswer(t *testing.T) {
 	}
 	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.showingAnswer || m.screen != reviewing {
 		t.Error("Enter after closing info should continue the review")
+	}
+}
+
+// With the one-page setting, item info shows every section on one
+// scrollable page, opened at the section for the part that was missed.
+func TestItemInfoOnePage(t *testing.T) {
+	long := lessonKanji
+	long.MeaningMnemonic = strings.Repeat("A long meaning story about lines. ", 30)
+	settings := lessons.Default(3)
+	settings.InfoLayout = lessons.InfoSingle
+	fb := &fakeBackend{details: map[int]lessons.Lesson{long.AssignmentID: long}, settings: settings}
+	m, _ := step(t, New(fb, false), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = step(t, m, loadedMsg{items: []review.Item{long.Item}})
+	if _, part, _ := m.session.Current(); part == review.Meaning {
+		m, _ = typeAndEnter(t, m, "two") // get to the reading question
+	}
+	m, _ = typeAndEnter(t, m, "ぜんぜん") // wrong reading
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if m.screen != itemInfo || len(m.pages()) != 1 {
+		t.Fatalf("screen %v, %d pages; want item info with one page", m.screen, len(m.pages()))
+	}
+	got := stripANSI(m.View().Content)
+	if !strings.Contains(got, "On'yomi") {
+		t.Errorf("a missed reading should open at the Reading section:\n%s", got)
+	}
+	for range 60 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	}
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "A long meaning story") {
+		t.Errorf("scrolling up should reach the Meaning section on the same page:\n%s", got)
+	}
+	before := m.page
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight}); m.page != before {
+		t.Error("one-page layout has no other page to go to")
+	}
+}
+
+func TestSettingsInfoLayoutRow(t *testing.T) {
+	fb := &fakeBackend{settings: lessons.Default(3)}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m, _ = step(t, m, cmd())
+	for range 6 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Item info") || !strings.Contains(got, "one page") {
+		t.Errorf("settings should show the item info layout:\n%s", got)
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	step(t, m, cmd())
+	if len(fb.saved) != 1 || fb.saved[0].InfoLayout != lessons.InfoSingle {
+		t.Errorf("saved %+v, want the single-page layout", fb.saved)
 	}
 }

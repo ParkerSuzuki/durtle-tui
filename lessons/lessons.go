@@ -25,12 +25,21 @@ type Types struct {
 	Vocabulary bool `json:"vocabulary"`
 }
 
-// Settings are the user's lesson rules, saved in settings.json.
+// InfoLayout is how the item-info screen (f after a wrong answer) is laid out.
+type InfoLayout string
+
+const (
+	InfoPages  InfoLayout = "pages"  // meaning, reading, and context on separate pages
+	InfoSingle InfoLayout = "single" // everything on one scrollable page
+)
+
+// Settings are the user's rules and preferences, saved in settings.json.
 type Settings struct {
-	DailyCap  int   `json:"daily_cap"`
-	Order     Order `json:"order"`
-	Types     Types `json:"types"`
-	BatchSize int   `json:"batch_size"`
+	DailyCap   int        `json:"daily_cap"`
+	Order      Order      `json:"order"`
+	Types      Types      `json:"types"`
+	BatchSize  int        `json:"batch_size"`
+	InfoLayout InfoLayout `json:"info_layout"`
 }
 
 const (
@@ -57,6 +66,9 @@ func (s Settings) Clamp() Settings {
 	}
 	if s.Types == (Types{}) {
 		s.Types = Types{true, true, true}
+	}
+	if s.InfoLayout != InfoSingle {
+		s.InfoLayout = InfoPages
 	}
 	return s
 }

@@ -549,6 +549,8 @@ func (m Model) teachBody() (lines []string, avail int) {
 		body = readingLines(l)
 	case contextPage:
 		body = contextLines(l)
+	case allPage:
+		body = allLines(l)
 	}
 	text := strings.Join(body, "\n")
 	if w := m.innerWidth(); w > 0 {
@@ -574,6 +576,8 @@ func (m Model) teachingView() string {
 		name, bar = "reading", readingBar
 	case contextPage:
 		name = "context"
+	case allPage:
+		name = "info"
 	}
 	if w := m.innerWidth(); w > 0 {
 		bar = bar.Width(w).Align(lipgloss.Center)
@@ -665,6 +669,24 @@ func readingLines(l lessons.Lesson) []string {
 	return lines
 }
 
+// readingHeading titles the reading section of the one-page item info;
+// openInfo scrolls to it after a missed reading.
+const readingHeading = "Reading"
+
+// allLines stacks every section for the one-page item info layout.
+func allLines(l lessons.Lesson) []string {
+	lines := append([]string{title.Render("Meaning")}, meaningLines(l)...)
+	if l.HasReading() {
+		lines = append(lines, "", title.Render(readingHeading))
+		lines = append(lines, readingLines(l)...)
+	}
+	if len(l.Sentences) > 0 {
+		lines = append(lines, "", title.Render("Context"))
+		lines = append(lines, contextLines(l)...)
+	}
+	return lines
+}
+
 func contextLines(l lessons.Lesson) []string {
 	var lines []string
 	for _, s := range l.Sentences {
@@ -704,6 +726,10 @@ func (m Model) settingsView() string {
 		}
 		return "[ ]"
 	}
+	layout := "pages"
+	if s.InfoLayout == lessons.InfoSingle {
+		layout = "one page"
+	}
 	rows := [settingRows][2]string{
 		{"Daily lesson cap", fmt.Sprintf("‹ %d ›", s.DailyCap)},
 		{"Order", fmt.Sprintf("‹ %s ›", s.Order)},
@@ -711,8 +737,9 @@ func (m Model) settingsView() string {
 		{"Kanji", check(s.Types.Kanji)},
 		{"Vocabulary", check(s.Types.Vocabulary)},
 		{"Batch size", fmt.Sprintf("‹ %d ›", s.BatchSize)},
+		{"Item info", "‹ " + layout + " ›"},
 	}
-	lines := []string{title.Render("Lesson settings"), ""}
+	lines := []string{title.Render("Settings"), ""}
 	for i, r := range rows {
 		cursor := "  "
 		if i == m.settingRow {

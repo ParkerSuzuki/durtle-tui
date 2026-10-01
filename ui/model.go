@@ -14,6 +14,7 @@ import (
 	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Backend is everything the UI needs from the outside world.
@@ -121,6 +122,7 @@ type Model struct {
 	lessonMode      bool           // the reviewing screen is a lesson quiz
 	practice        bool           // the reviewing screen is recent-mistakes practice: nothing is sent
 	info            lessons.Lesson // the item shown on the item-info screen
+	infoSingle      bool           // item info shows everything on one scrollable page
 	started         int            // lessons started on WaniKani this session
 	startFailed     int
 	startErr        error
@@ -254,6 +256,7 @@ const (
 	meaningPage pageKind = iota
 	readingPage
 	contextPage
+	allPage // item info, one-page layout: every section stacked
 )
 
 // teachPage is one teaching screen: a lesson in the batch and which page.
@@ -263,6 +266,9 @@ type teachPage struct {
 }
 
 func (m Model) pages() []teachPage {
+	if m.screen == itemInfo && m.infoSingle {
+		return []teachPage{{0, allPage}}
+	}
 	var ps []teachPage
 	for i, l := range m.batch() {
 		ps = append(ps, teachPage{i, meaningPage})
@@ -288,11 +294,26 @@ func (m Model) openInfo() Model {
 		l = lessons.Lesson{Item: item} // no teaching content: still show its answers
 	}
 	m.info, m.screen, m.page, m.scroll, m.bigDrawn = l, itemInfo, 0, 0, ""
-	if part == review.Reading {
-		for i, p := range m.pages() {
-			if p.kind == readingPage {
-				m.page = i
+	// The layout is a saved preference; settings.json is tiny, so reading it
+	// here is cheaper than keeping a second copy in sync.
+	s, err := m.backend.Settings()
+	m.infoSingle = err == nil && s.InfoLayout == lessons.InfoSingle
+	if part != review.Reading {
+		return m
+	}
+	if m.infoSingle { // start at the Reading section
+		lines, avail := m.teachBody()
+		for i, line := range lines {
+			if strings.TrimSpace(ansi.Strip(line)) == readingHeading {
+				m.scroll = min(i, max(len(lines)-avail, 0))
+				break
 			}
+		}
+		return m
+	}
+	for i, p := range m.pages() {
+		if p.kind == readingPage {
+			m.page = i
 		}
 	}
 	return m
@@ -765,7 +786,7 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-const settingRows = 6 // daily cap, order, radicals, kanji, vocabulary, batch size
+const settingRows = 7 // daily cap, order, radicals, kanji, vocabulary, batch size, item info layout
 
 func (m Model) loadSettings() tea.Cmd {
 	return func() tea.Msg {
@@ -813,6 +834,12 @@ func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
 			s.Types.Vocabulary = !s.Types.Vocabulary
 		case 5:
 			s.BatchSize += d
+		case 6:
+			if s.InfoLayout == lessons.InfoSingle {
+				s.InfoLayout = lessons.InfoPages
+			} else {
+				s.InfoLayout = lessons.InfoSingle
+			}
 		}
 		if s.Types == (lessons.Types{}) {
 			*s = prev
