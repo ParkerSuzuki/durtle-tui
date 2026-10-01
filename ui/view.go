@@ -52,7 +52,7 @@ func (m Model) View() tea.View {
 		body = m.summaryView()
 	case home:
 		body = m.homeView()
-	case teaching:
+	case teaching, itemInfo:
 		body = m.teachingView()
 	case lessonSummary:
 		body = m.lessonSummaryView()
@@ -107,6 +107,10 @@ func (m Model) reviewView() string {
 		bar = bar.Width(w).Align(lipgloss.Center)
 	}
 	prompt := bar.Render(fmt.Sprintf("%s %s", typeLabel(item.Type), part))
+	reviewHint := ":q dashboard   esc quit"
+	if m.showingAnswer {
+		reviewHint = "enter continue   f item info   esc quit"
+	}
 	return strings.Join([]string{
 		dim.Render(fmt.Sprintf("%d / %d done   %s correct", done, m.session.Total(), percentCorrect(m.session.Results()))),
 		"",
@@ -117,7 +121,7 @@ func (m Model) reviewView() string {
 		"",
 		m.feedback,
 		"",
-		dim.Render(":q dashboard   esc quit"),
+		dim.Render(reviewHint),
 	}, "\n")
 }
 
@@ -155,7 +159,7 @@ func (m Model) currentItem() (review.Item, bool) {
 	case reviewing:
 		it, _, ok := m.session.Current()
 		return it, ok
-	case teaching:
+	case teaching, itemInfo:
 		ps := m.pages()
 		if len(ps) == 0 {
 			return review.Item{}, false
@@ -193,7 +197,7 @@ func (m Model) fitScale(text string, width int) int {
 func (m Model) bigGlyphs() []bigGlyph {
 	w := m.innerWidth()
 	switch m.screen {
-	case reviewing, teaching:
+	case reviewing, teaching, itemInfo:
 		item, ok := m.currentItem()
 		if !ok {
 			return nil
@@ -545,6 +549,8 @@ func (m Model) teachBody() (lines []string, avail int) {
 		body = readingLines(l)
 	case contextPage:
 		body = contextLines(l)
+	case allPage:
+		body = allLines(l)
 	}
 	text := strings.Join(body, "\n")
 	if w := m.innerWidth(); w > 0 {
@@ -570,9 +576,17 @@ func (m Model) teachingView() string {
 		name, bar = "reading", readingBar
 	case contextPage:
 		name = "context"
+	case allPage:
+		name = "info"
 	}
 	if w := m.innerWidth(); w > 0 {
 		bar = bar.Width(w).Align(lipgloss.Center)
+	}
+	header := fmt.Sprintf("Lesson %d of %d   page %d of %d", m.batchStart+p.lesson+1, len(m.plan.Lessons), m.page+1, len(ps))
+	hint := "← → pages   ↑↓ scroll   enter next   q dashboard   esc quit"
+	if m.screen == itemInfo {
+		header = fmt.Sprintf("Item info   page %d of %d", m.page+1, len(ps))
+		hint = "← → pages   ↑↓ scroll   f back"
 	}
 	// Bubble Tea drops the top of a frame taller than the screen, which would
 	// push the block out from under the big glyph, so long text scrolls.
@@ -587,8 +601,7 @@ func (m Model) teachingView() string {
 		}
 	}
 	return strings.Join([]string{
-		dim.Render(fmt.Sprintf("Lesson %d of %d   page %d of %d",
-			m.batchStart+p.lesson+1, len(m.plan.Lessons), m.page+1, len(ps))),
+		dim.Render(header),
 		"",
 		m.itemBlock(l.Item),
 		"",
@@ -596,7 +609,7 @@ func (m Model) teachingView() string {
 		"",
 		strings.Join(shown, "\n"),
 		"",
-		dim.Render("← → pages   ↑↓ scroll   enter next   q dashboard   esc quit"),
+		dim.Render(hint),
 	}, "\n")
 }
 
@@ -656,6 +669,24 @@ func readingLines(l lessons.Lesson) []string {
 	return lines
 }
 
+// readingHeading titles the reading section of the one-page item info;
+// openInfo scrolls to it after a missed reading.
+const readingHeading = "Reading"
+
+// allLines stacks every section for the one-page item info layout.
+func allLines(l lessons.Lesson) []string {
+	lines := append([]string{title.Render("Meaning")}, meaningLines(l)...)
+	if l.HasReading() {
+		lines = append(lines, "", title.Render(readingHeading))
+		lines = append(lines, readingLines(l)...)
+	}
+	if len(l.Sentences) > 0 {
+		lines = append(lines, "", title.Render("Context"))
+		lines = append(lines, contextLines(l)...)
+	}
+	return lines
+}
+
 func contextLines(l lessons.Lesson) []string {
 	var lines []string
 	for _, s := range l.Sentences {
@@ -695,6 +726,10 @@ func (m Model) settingsView() string {
 		}
 		return "[ ]"
 	}
+	layout := "pages"
+	if s.InfoLayout == lessons.InfoSingle {
+		layout = "one page"
+	}
 	rows := [settingRows][2]string{
 		{"Daily lesson cap", fmt.Sprintf("‹ %d ›", s.DailyCap)},
 		{"Order", fmt.Sprintf("‹ %s ›", s.Order)},
@@ -702,8 +737,9 @@ func (m Model) settingsView() string {
 		{"Kanji", check(s.Types.Kanji)},
 		{"Vocabulary", check(s.Types.Vocabulary)},
 		{"Batch size", fmt.Sprintf("‹ %d ›", s.BatchSize)},
+		{"Item info", "‹ " + layout + " ›"},
 	}
-	lines := []string{title.Render("Lesson settings"), ""}
+	lines := []string{title.Render("Settings"), ""}
 	for i, r := range rows {
 		cursor := "  "
 		if i == m.settingRow {

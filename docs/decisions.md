@@ -267,3 +267,11 @@ grant, longer).
 **Why:** It sees mistakes made anywhere (website included) and reuses the quiz with one flag. The loading screen's "what am I loading" state became one small enum (`loadKind`) now that four things can load.
 **Known limits:** A mistake appears after the next dashboard sync. After a long gap between syncs, a mistake is dated by the item's last update, not the wrong answer itself.
 **Passed on:** Logging only durtle-tui's own wrong answers (misses the website); removing an item after a correct practice answer (the website keeps it for the full 24 hours).
+
+## 32. Item info after a wrong answer (2026-10-01)
+
+**Context:** The user wanted a key to see more about an item right after getting it wrong, as on the website.
+**Decision:** While a correction is showing, `f` (the website's key) opens the item's teaching pages: meaning, reading, and context, the same view lessons use, starting on the page for the missed part. `f`, Enter, or Esc returns to the correction; Esc does not quit from there. It works in reviews, lesson quizzes, and recent-mistakes practice. The backend keeps the teaching content of the last loaded items in memory (`Details`), so opening it needs no network or disk.
+**Why:** The content and the view already existed for lessons; reusing both made this one screen value and one in-memory map.
+**Passed on:** Info available at any time during a question (it would show the answer); loading content on demand from the 15 MB cache (a quarter-second pause per press).
+**Added 2026-10-01:** A setting, "Item info" (`info_layout` in settings.json): `pages` (default) or `single`, which stacks Meaning, Reading, and Context on one scrollable page and opens scrolled to the Reading section after a missed reading. Lessons always use pages. The settings struct stays in package `lessons` even though this one is a display preference: one small file, one screen.

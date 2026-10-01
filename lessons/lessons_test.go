@@ -104,3 +104,15 @@ func TestMarkup(t *testing.T) {
 		t.Errorf("a lone < must stay text: %+v", got)
 	}
 }
+
+func TestInfoLayoutSetting(t *testing.T) {
+	if got := Default(5).InfoLayout; got != InfoPages {
+		t.Errorf("default info layout = %q, want pages", got)
+	}
+	if got := (Settings{InfoLayout: "sideways"}).Clamp().InfoLayout; got != InfoPages {
+		t.Errorf("unknown layout clamps to %q, want pages", got)
+	}
+	if got := (Settings{InfoLayout: InfoSingle}).Clamp().InfoLayout; got != InfoSingle {
+		t.Errorf("single layout lost: %q", got)
+	}
+}

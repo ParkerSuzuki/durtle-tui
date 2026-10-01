@@ -14,6 +14,7 @@ import (
 	"github.com/ParkerSuzuki/durtle-tui/lessons"
 	"github.com/ParkerSuzuki/durtle-tui/review"
 	"github.com/ParkerSuzuki/durtle-tui/wanikani"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Backend is everything the UI needs from the outside world.
@@ -23,6 +24,7 @@ type Backend interface {
 	Submit(ctx context.Context, s review.Submission) (pending bool, err error)
 	Dashboard(ctx context.Context) (dashboard.Dashboard, error)
 	Mistakes(ctx context.Context) (items []review.Item, skipped int, err error)
+	Details(assignmentID int) (lessons.Lesson, bool) // teaching content of a loaded item
 	Lessons(ctx context.Context) (lessons.Plan, error)
 	StartLesson(ctx context.Context, assignmentID int) error
 	Settings() (lessons.Settings, error)
@@ -44,6 +46,7 @@ const (
 	teaching
 	lessonSummary
 	settingsScreen
+	itemInfo // teaching pages for the item just answered wrong
 )
 
 // loadKind is what the loading screen is waiting for.
@@ -114,11 +117,13 @@ type Model struct {
 	refreshAt     time.Time // when the dashboard reloads itself; stale timers are ignored
 
 	plan            lessons.Plan
-	batchStart      int  // index of the first lesson in the current batch
-	page            int  // teaching page within the batch
-	lessonMode      bool // the reviewing screen is a lesson quiz
-	practice        bool // the reviewing screen is recent-mistakes practice: nothing is sent
-	started         int  // lessons started on WaniKani this session
+	batchStart      int            // index of the first lesson in the current batch
+	page            int            // teaching page within the batch
+	lessonMode      bool           // the reviewing screen is a lesson quiz
+	practice        bool           // the reviewing screen is recent-mistakes practice: nothing is sent
+	info            lessons.Lesson // the item shown on the item-info screen
+	infoSingle      bool           // item info shows everything on one scrollable page
+	started         int            // lessons started on WaniKani this session
 	startFailed     int
 	startErr        error
 	settings        lessons.Settings // being edited on the settings screen
@@ -238,6 +243,9 @@ func (m Model) startLessons() (tea.Model, tea.Cmd) {
 
 // batch is the lessons being taught or quizzed right now.
 func (m Model) batch() []lessons.Lesson {
+	if m.screen == itemInfo {
+		return []lessons.Lesson{m.info} // the info screen reuses the teaching pages
+	}
 	end := min(m.batchStart+m.plan.BatchSize, len(m.plan.Lessons))
 	return m.plan.Lessons[m.batchStart:end]
 }
@@ -248,6 +256,7 @@ const (
 	meaningPage pageKind = iota
 	readingPage
 	contextPage
+	allPage // item info, one-page layout: every section stacked
 )
 
 // teachPage is one teaching screen: a lesson in the batch and which page.
@@ -257,6 +266,9 @@ type teachPage struct {
 }
 
 func (m Model) pages() []teachPage {
+	if m.screen == itemInfo && m.infoSingle {
+		return []teachPage{{0, allPage}}
+	}
 	var ps []teachPage
 	for i, l := range m.batch() {
 		ps = append(ps, teachPage{i, meaningPage})
@@ -268,6 +280,43 @@ func (m Model) pages() []teachPage {
 		}
 	}
 	return ps
+}
+
+// openInfo shows the teaching pages of the item just answered wrong,
+// starting on the page for the part that was missed.
+func (m Model) openInfo() Model {
+	item, part, ok := m.session.Current()
+	if !ok {
+		return m
+	}
+	l, found := m.backend.Details(item.AssignmentID)
+	if !found {
+		l = lessons.Lesson{Item: item} // no teaching content: still show its answers
+	}
+	m.info, m.screen, m.page, m.scroll, m.bigDrawn = l, itemInfo, 0, 0, ""
+	// The layout is a saved preference; settings.json is tiny, so reading it
+	// here is cheaper than keeping a second copy in sync.
+	s, err := m.backend.Settings()
+	m.infoSingle = err == nil && s.InfoLayout == lessons.InfoSingle
+	if part != review.Reading {
+		return m
+	}
+	if m.infoSingle { // start at the Reading section
+		lines, avail := m.teachBody()
+		for i, line := range lines {
+			if strings.TrimSpace(ansi.Strip(line)) == readingHeading {
+				m.scroll = min(i, max(len(lines)-avail, 0))
+				break
+			}
+		}
+		return m
+	}
+	for i, p := range m.pages() {
+		if p.kind == readingPage {
+			m.page = i
+		}
+	}
+	return m
 }
 
 // quiz starts the back-to-back quiz on the current batch.
@@ -531,6 +580,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == settingsScreen {
 			return m.settingsKey(msg.String())
 		}
+		if m.screen == itemInfo {
+			last := len(m.pages()) - 1
+			switch msg.String() {
+			case "right":
+				m.page, m.scroll = min(m.page+1, last), 0
+			case "left":
+				m.page, m.scroll = max(m.page-1, 0), 0
+			case "down":
+				lines, avail := m.teachBody()
+				m.scroll = min(m.scroll+1, max(len(lines)-avail, 0))
+			case "up":
+				m.scroll = max(m.scroll-1, 0)
+			case "f", "enter", "esc": // back to the correction; Esc does not quit from here
+				m.screen, m.bigDrawn = reviewing, ""
+			case "ctrl+c":
+				return m.quit()
+			}
+			return m, nil
+		}
+		if m.screen == reviewing && m.showingAnswer && msg.String() == "f" {
+			return m.openInfo(), nil
+		}
 		if m.screen == teaching {
 			last := len(m.pages()) - 1
 			switch msg.String() {
@@ -715,7 +786,7 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-const settingRows = 6 // daily cap, order, radicals, kanji, vocabulary, batch size
+const settingRows = 7 // daily cap, order, radicals, kanji, vocabulary, batch size, item info layout
 
 func (m Model) loadSettings() tea.Cmd {
 	return func() tea.Msg {
@@ -763,6 +834,12 @@ func (m Model) settingsKey(key string) (tea.Model, tea.Cmd) {
 			s.Types.Vocabulary = !s.Types.Vocabulary
 		case 5:
 			s.BatchSize += d
+		case 6:
+			if s.InfoLayout == lessons.InfoSingle {
+				s.InfoLayout = lessons.InfoPages
+			} else {
+				s.InfoLayout = lessons.InfoSingle
+			}
 		}
 		if s.Types == (lessons.Types{}) {
 			*s = prev

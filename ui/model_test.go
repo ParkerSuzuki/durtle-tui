@@ -33,6 +33,12 @@ type fakeBackend struct {
 	settings   lessons.Settings
 	saved      []lessons.Settings
 	mistakes   []review.Item
+	details    map[int]lessons.Lesson
+}
+
+func (f *fakeBackend) Details(id int) (lessons.Lesson, bool) {
+	l, ok := f.details[id]
+	return l, ok
 }
 
 func (f *fakeBackend) Mistakes(context.Context) ([]review.Item, int, error) {
@@ -783,7 +789,7 @@ func TestSettingsScreen(t *testing.T) {
 	}
 	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	m, _ = step(t, m, cmd()) // saved
-	want := lessons.Settings{DailyCap: 1, Order: lessons.Interleaved, Types: lessons.Types{Vocabulary: true}, BatchSize: 3}
+	want := lessons.Settings{DailyCap: 1, Order: lessons.Interleaved, Types: lessons.Types{Vocabulary: true}, BatchSize: 3, InfoLayout: lessons.InfoPages}
 	if len(fb.saved) != 1 || fb.saved[0] != want {
 		t.Errorf("saved %+v, want %+v", fb.saved, want)
 	}
@@ -1083,5 +1089,102 @@ func TestPracticeRecentMistakes(t *testing.T) {
 	}
 	if m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.screen != loading || cmd == nil || m.practice {
 		t.Errorf("Enter after practice: screen %v practice %v; want the dashboard loading", m.screen, m.practice)
+	}
+}
+
+// After a wrong answer, f opens the item's info on the page for the part
+// that was missed; leaving returns to the same wrong-answer state.
+func TestItemInfoAfterWrongAnswer(t *testing.T) {
+	fb := &fakeBackend{details: map[int]lessons.Lesson{lessonKanji.AssignmentID: lessonKanji}}
+	m, _ := step(t, New(fb, false), loadedMsg{items: []review.Item{lessonKanji.Item}})
+
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if m.screen != reviewing || m.input.Value() != "f" {
+		t.Fatalf("f before any answer must be typed: screen %v, input %q", m.screen, m.input.Value())
+	}
+	_, part, _ := m.session.Current()
+	wrong := map[review.Part]string{review.Meaning: "zzz", review.Reading: "ぜんぜん"}[part]
+	if m, _ = typeAndEnter(t, m, wrong); !m.showingAnswer {
+		t.Fatal("expected the wrong-answer state")
+	}
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "f item info") {
+		t.Errorf("wrong-answer screen should offer f:\n%s", got)
+	}
+
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if m.screen != itemInfo {
+		t.Fatalf("f after a wrong answer: screen %v, want item info", m.screen)
+	}
+	got := stripANSI(m.View().Content)
+	want := map[review.Part]string{review.Meaning: "lines", review.Reading: "On'yomi"}[part]
+	if !strings.Contains(got, want) || !strings.Contains(got, "Item info") {
+		t.Errorf("info for a missed %v should open on that page (want %q):\n%s", part, want, got)
+	}
+	other := map[review.Part]rune{review.Meaning: tea.KeyRight, review.Reading: tea.KeyLeft}[part]
+	m, _ = step(t, m, tea.KeyPressMsg{Code: other})
+	otherWant := map[review.Part]string{review.Meaning: "On'yomi", review.Reading: "lines"}[part]
+	if got := stripANSI(m.View().Content); !strings.Contains(got, otherWant) {
+		t.Errorf("paging to the other page: want %q:\n%s", otherWant, got)
+	}
+
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil || m.quitting || m.screen != reviewing || !m.showingAnswer {
+		t.Fatalf("esc in item info: screen %v showingAnswer %v quitting %v; want back at the correction", m.screen, m.showingAnswer, m.quitting)
+	}
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter}); m.showingAnswer || m.screen != reviewing {
+		t.Error("Enter after closing info should continue the review")
+	}
+}
+
+// With the one-page setting, item info shows every section on one
+// scrollable page, opened at the section for the part that was missed.
+func TestItemInfoOnePage(t *testing.T) {
+	long := lessonKanji
+	long.MeaningMnemonic = strings.Repeat("A long meaning story about lines. ", 30)
+	settings := lessons.Default(3)
+	settings.InfoLayout = lessons.InfoSingle
+	fb := &fakeBackend{details: map[int]lessons.Lesson{long.AssignmentID: long}, settings: settings}
+	m, _ := step(t, New(fb, false), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = step(t, m, loadedMsg{items: []review.Item{long.Item}})
+	if _, part, _ := m.session.Current(); part == review.Meaning {
+		m, _ = typeAndEnter(t, m, "two") // get to the reading question
+	}
+	m, _ = typeAndEnter(t, m, "ぜんぜん") // wrong reading
+	m, _ = step(t, m, tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if m.screen != itemInfo || len(m.pages()) != 1 {
+		t.Fatalf("screen %v, %d pages; want item info with one page", m.screen, len(m.pages()))
+	}
+	got := stripANSI(m.View().Content)
+	if !strings.Contains(got, "On'yomi") {
+		t.Errorf("a missed reading should open at the Reading section:\n%s", got)
+	}
+	for range 60 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	}
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "A long meaning story") {
+		t.Errorf("scrolling up should reach the Meaning section on the same page:\n%s", got)
+	}
+	before := m.page
+	if m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight}); m.page != before {
+		t.Error("one-page layout has no other page to go to")
+	}
+}
+
+func TestSettingsInfoLayoutRow(t *testing.T) {
+	fb := &fakeBackend{settings: lessons.Default(3)}
+	m, _ := step(t, New(fb, false), dashboardMsg{d: dashboard.Dashboard{}})
+	m, cmd := step(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m, _ = step(t, m, cmd())
+	for range 6 {
+		m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Item info") || !strings.Contains(got, "one page") {
+		t.Errorf("settings should show the item info layout:\n%s", got)
+	}
+	m, cmd = step(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	step(t, m, cmd())
+	if len(fb.saved) != 1 || fb.saved[0].InfoLayout != lessons.InfoSingle {
+		t.Errorf("saved %+v, want the single-page layout", fb.saved)
 	}
 }
