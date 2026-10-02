@@ -275,3 +275,11 @@ grant, longer).
 **Why:** The content and the view already existed for lessons; reusing both made this one screen value and one in-memory map.
 **Passed on:** Info available at any time during a question (it would show the answer); loading content on demand from the 15 MB cache (a quarter-second pause per press).
 **Added 2026-10-01:** A setting, "Item info" (`info_layout` in settings.json): `pages` (default) or `single`, which stacks Meaning, Reading, and Context on one scrollable page and opens scrolled to the Reading section after a missed reading. Lessons always use pages. The settings struct stays in package `lessons` even though this one is a display preference: one small file, one screen.
+
+## 33. Show the SRS stage change after each review (2026-10-01)
+
+**Context:** The user wanted to see the old and new SRS stage after answering, as on the website.
+**Decision:** When a review item is finished, the result line shows the change (`Guru 1 → Apprentice 3 ↓`), computed locally by `review.NextStage` from WaniKani's published formula and the stage the item had when the session loaded. The summary lists each missed item with its change. Lesson quizzes and practice show nothing (they do not move stages).
+**Why:** Instant, and no extra request; the formula is public (https://knowledge.wanikani.com/wanikani/srs-stages/). The server's own answer arrives later with the submit and would make the line appear late or out of order.
+**Passed on:** Reading the new stage from the `POST /reviews` response (accurate by definition, but asynchronous).
+**Known limit:** If WaniKani changes the formula, the display is wrong until `NextStage` is updated; the actual stage on WaniKani is unaffected.

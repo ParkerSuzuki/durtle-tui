@@ -1188,3 +1188,32 @@ func TestSettingsInfoLayoutRow(t *testing.T) {
 		t.Errorf("saved %+v, want the single-page layout", fb.saved)
 	}
 }
+
+// Finishing a review item shows its SRS stage change, computed with
+// WaniKani's published formula; the summary lists the change for misses.
+func TestSRSChangeShown(t *testing.T) {
+	item := ground
+	item.SRSStage = 5 // Guru 1
+	m, _ := step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{item}})
+	m, _ = typeAndEnter(t, m, "sky") // one wrong answer
+	m, _ = step(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = typeAndEnter(t, m, "ground")
+	if !strings.Contains(m.feedback, "Guru 1 → Apprentice 3") {
+		t.Errorf("feedback = %q; want the stage drop", m.feedback)
+	}
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "一") || !strings.Contains(got, "Guru 1 → Apprentice 3") {
+		t.Errorf("summary should list the missed item with its change:\n%s", got)
+	}
+
+	item.SRSStage = 4
+	m, _ = step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{item}})
+	if m, _ = typeAndEnter(t, m, "ground"); !strings.Contains(m.feedback, "Apprentice 4 → Guru 1") {
+		t.Errorf("feedback = %q; want the stage rise", m.feedback)
+	}
+
+	// Practice changes nothing on WaniKani, so it shows no change.
+	m, _ = step(t, New(&fakeBackend{}, false), loadedMsg{items: []review.Item{item}, practice: true})
+	if m, _ = typeAndEnter(t, m, "ground"); strings.Contains(m.feedback, "→") {
+		t.Errorf("practice feedback = %q; want no stage change", m.feedback)
+	}
+}

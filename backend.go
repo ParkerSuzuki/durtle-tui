@@ -469,7 +469,7 @@ func buildItems(assignments []wanikani.Resource[wanikani.Assignment],
 		if !ok {
 			continue
 		}
-		it := review.Item{AssignmentID: a.ID, Type: s.Object}
+		it := review.Item{AssignmentID: a.ID, SRSStage: a.Data.SRSStage, Type: s.Object}
 		if s.Data.Characters != nil {
 			it.Characters = *s.Data.Characters
 		} else if it.Image, it.PNG = art(s); it.Image == nil {

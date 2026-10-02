@@ -21,6 +21,7 @@ func (p Part) String() string {
 // assignment, and study-material data.
 type Item struct {
 	AssignmentID  int
+	SRSStage      int    // the item's stage when loaded (1-8); 0 when unknown or not a review
 	Type          string // "radical", "kanji", "vocabulary", "kana_vocabulary"
 	Characters    string
 	Meanings      []string // accepted answers, primary first
