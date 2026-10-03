@@ -62,9 +62,15 @@ func GradeMeaning(it Item, input string) Grade {
 // hiragana. A kanji reading of the wrong type is a warning, not a miss.
 func GradeReading(it Item, input string) Grade {
 	answer := KatakanaToHiragana(ToHiragana(strings.TrimSpace(input), true))
+	for _, r := range it.Readings {
+		if answer == KatakanaToHiragana(r) {
+			return Grade{Verdict: Correct}
+		}
+	}
 	// The input box converts as you type, so a meaning typed here arrives
 	// half converted ("mankind" becomes "まんきんd"). Convert each meaning the
-	// same way to recognize it.
+	// same way to recognize it. Checked after the accepted readings: some
+	// names' meaning is their own romanized reading (田代島, "Tashirojima").
 	for _, m := range it.Meanings {
 		if answer == ToHiragana(normalizeMeaning(m), true) {
 			return Grade{Warn, "That's the meaning. We want the reading."}
@@ -72,11 +78,6 @@ func GradeReading(it Item, input string) Grade {
 	}
 	if containsLatin(answer) {
 		return Grade{Warn, "Some letters didn't turn into kana. We want the reading."}
-	}
-	for _, r := range it.Readings {
-		if answer == KatakanaToHiragana(r) {
-			return Grade{Verdict: Correct}
-		}
 	}
 	for _, r := range it.OtherReadings {
 		if answer == KatakanaToHiragana(r) {
