@@ -1,6 +1,7 @@
 package review
 
 import (
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -44,6 +45,16 @@ func GradeMeaning(it Item, input string) Grade {
 	for _, m := range it.Meanings {
 		if answer == normalizeMeaning(m) {
 			return Grade{Verdict: Correct}
+		}
+	}
+	// The reading typed in romaji ("ju" for じゅ) means the user answered the
+	// wrong question. Checked after the accepted meanings, so a name whose
+	// meaning is its own romanized reading (Tashirojima) stays correct.
+	if kana := ToHiragana(strings.ReplaceAll(answer, " ", ""), true); !containsLatin(kana) {
+		for _, r := range append(slices.Clone(it.Readings), it.OtherReadings...) {
+			if kana == KatakanaToHiragana(r) {
+				return Grade{Warn, "That's the reading. We want the meaning."}
+			}
 		}
 	}
 	if strings.ContainsAny(answer, "0123456789") {
