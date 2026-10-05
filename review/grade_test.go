@@ -100,3 +100,34 @@ func TestMeaningTypedAsReading(t *testing.T) {
 		t.Errorf("unrelated latin input got the meaning hint: %q", got)
 	}
 }
+
+// A name whose English meaning is its own romanized reading (田代島,
+// "Tashirojima") must accept the reading, not mistake it for the meaning.
+func TestReadingThatSpellsTheMeaning(t *testing.T) {
+	island := Item{Type: "vocabulary", Characters: "田代島",
+		Meanings: []string{"Tashirojima", "Tashiro Island"}, Readings: []string{"たしろじま"}}
+	if g := GradeReading(island, ToHiragana("tashirojima", true)); g.Verdict != Correct {
+		t.Errorf("GradeReading(たしろじま) = %+v, want Correct", g)
+	}
+	if g := GradeReading(island, ToHiragana("tashiro island", true)); g.Verdict != Warn {
+		t.Errorf("a different meaning typed as a reading should still warn, got %+v", g)
+	}
+}
+
+// The reading typed in romaji into the meaning box is a warning, not a miss.
+func TestReadingTypedAsMeaning(t *testing.T) {
+	accept := Item{Type: "kanji", Characters: "受", Meanings: []string{"Accept", "Receive"},
+		Readings: []string{"じゅ"}, OtherReadings: []string{"う"}, ReadingKind: "on'yomi"}
+	for _, typed := range []string{"ju", "JU ", "u"} {
+		if g := GradeMeaning(accept, typed); g.Verdict != Warn || !strings.Contains(g.Hint, "meaning") {
+			t.Errorf("GradeMeaning(%q) = %+v, want a Warn asking for the meaning", typed, g)
+		}
+	}
+	island := Item{Type: "vocabulary", Characters: "田代島", Meanings: []string{"Tashirojima"}, Readings: []string{"たしろじま"}}
+	if g := GradeMeaning(island, "tashirojima"); g.Verdict != Correct {
+		t.Errorf("a meaning that spells the reading must stay correct, got %+v", g)
+	}
+	if g := GradeMeaning(accept, "jump"); g.Verdict != Wrong {
+		t.Errorf("an unrelated wrong meaning is still wrong, got %+v", g)
+	}
+}
